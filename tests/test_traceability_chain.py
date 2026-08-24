@@ -11,9 +11,11 @@ Run with:  pytest tests/test_traceability_chain.py
 
 import httpx
 import pytest
+import uuid
 
 BASE = "http://localhost:8000"
 HUMAN = {"X-Acting-As": "human:pytest"}
+CI = {"X-Acting-As": "ci:pipeline", "X-CI-Token": "dev-ci-token-change-me"}
 
 
 def _api_reachable() -> bool:
@@ -37,6 +39,13 @@ def client():
 
 
 def test_full_chain_and_gates(client):
+    # Unique suffix per run: fixed IDs (SPEC-..., MRP-PR-...) would collide
+    # on any re-run against a persistent database (409s mid-test).
+    suffix = uuid.uuid4().hex[:6].upper()
+    domain = f"TST{suffix}"
+    spec_name = f"test-spec-{suffix}"
+    pr_number = 10000 + int(suffix[:4], 16)
+
     # 1. project
     r = client.post("/projects", json={
         "id": "test-project", "name": "Test Project", "stack": "springboot"
@@ -45,7 +54,7 @@ def test_full_chain_and_gates(client):
 
     # 2. PRD
     r = client.post("/prds", json={
-        "project_id": "test-project", "domain": "TST", "title": "Test PRD",
+        "project_id": "test-project", "domain": domain, "title": "Test PRD",
         "body_ref": "n/a", "created_by": "human:pytest"
     })
     assert r.status_code == 200
@@ -53,7 +62,7 @@ def test_full_chain_and_gates(client):
 
     # 3. User Story + AC
     r = client.post("/user-stories", json={
-        "prd_id": prd_id, "domain": "TST", "body_ref": "n/a"
+        "prd_id": prd_id, "domain": domain, "body_ref": "n/a"
     })
     assert r.status_code == 200
     us_id = r.json()["id"]
@@ -63,7 +72,7 @@ def test_full_chain_and_gates(client):
     # 4. Spec, unvalidated
     r = client.post("/specs", json={
         "project_id": "test-project", "user_story_id": us_id, "domain": "TST",
-        "name": "test-spec", "body_ref": "n/a"
+        "name": spec_name, "body_ref": "n/a"
     })
     assert r.status_code == 200
     spec_id = r.json()["id"]
@@ -82,7 +91,7 @@ def test_full_chain_and_gates(client):
     # 6b. GATE CHECK: the same call without a human X-Acting-As header is rejected
     r = client.post("/specs", json={
         "project_id": "test-project", "user_story_id": us_id, "domain": "TST",
-        "name": "test-spec-2", "body_ref": "n/a"
+        "name": spec_name + "-2", "body_ref": "n/a"
     })
     assert r.status_code == 200
     spec2_id = r.json()["id"]
@@ -111,18 +120,21 @@ def test_full_chain_and_gates(client):
 
     # 8. MRP for this spec must show the open CRP
     r = client.post("/mrps", json={
-        "project_id": "test-project", "pull_request_number": 9999,
-        "branch_name": "test-branch", "created_by_agent_run": run_id,
-        "prd_id": prd_id, "spec_ids": [spec_id]
+        "project_id": "test-project", "pull_request_number": pr_number,
+        "branch_name": f"test-branch-{suffix}", "created_by_agent_run": run_id,
+        "prd_id": prd_id, "spec_ids": [spec_id],
+        "blueprint_id": "BP-SPRINGBOOT-001", "blueprint_version": "v1.0"
     })
     assert r.status_code == 200
     mrp_id = r.json()["id"]
     assert crp_id in r.json()["open_crp_ids"], "MRP did not surface the open CRP tied to its Spec"
 
     # 9. GATE CHECK: cannot approve MRP while High CRP is open
+    # Evidence must come from an authenticated CI actor (SASE_CI_TOKEN from
+    # docker-compose.yml).
     r = client.patch(f"/mrps/{mrp_id}/evidence", json={
         "unit_tests_status": "passed", "security_scan_status": "passed"
-    })
+    }, headers=CI)
     assert r.status_code == 200
     r = client.post(f"/mrps/{mrp_id}/human-decision", json={
         "decision": "approved"
