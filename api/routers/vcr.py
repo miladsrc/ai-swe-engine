@@ -27,6 +27,19 @@ def create_vcr(
         if not crp:
             raise HTTPException(404, f"CRP {payload.related_artifact_id} not found")
         crp.status = "resolved"
+        # Clear the resolved CRP from every MRP that had it attached at
+        # creation time. Without this, mrp_ready_for_merge keeps reading a
+        # stale open_crp_ids snapshot and blocks the merge forever after —
+        # the CRP is resolved but the MRP never finds out.
+        affected_mrps = (
+            db.query(models.MRP)
+            .filter(models.MRP.open_crp_ids.any(payload.related_artifact_id))
+            .all()
+        )
+        for m in affected_mrps:
+            m.open_crp_ids = [
+                c for c in (m.open_crp_ids or []) if c != payload.related_artifact_id
+            ]
     elif payload.related_artifact_type == "MRP":
         if not db.get(models.MRP, payload.related_artifact_id):
             raise HTTPException(404, f"MRP {payload.related_artifact_id} not found")
