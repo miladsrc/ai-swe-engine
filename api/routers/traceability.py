@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from api.database import get_db
 from api import models
+from api.security import require_any_actor
 
 router = APIRouter(prefix="/traceability", tags=["traceability"])
 
@@ -43,8 +44,18 @@ def full_chain_for_mrp(mrp_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/audit/{artifact_type}/{artifact_id}")
-def audit_for_artifact(artifact_type: str, artifact_id: str, db: Session = Depends(get_db)):
-    """Every recorded action touching one artifact, in order."""
+def audit_for_artifact(
+    artifact_type: str,
+    artifact_id: str,
+    db: Session = Depends(get_db),
+    _actor: str = Depends(require_any_actor),
+):
+    """
+    Every recorded action touching one artifact, in order. Guarded: the
+    audit trail is governance evidence and must not be readable
+    anonymously — any well-formed actor (human:/agent:/ci:/system:) may
+    read it, but the request must identify itself.
+    """
     return (
         db.query(models.AuditLog)
         .filter(models.AuditLog.artifact_type == artifact_type, models.AuditLog.artifact_id == artifact_id)
