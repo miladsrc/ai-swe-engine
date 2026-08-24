@@ -360,6 +360,25 @@ Fixes applied after initial full-project read (all verified by tests):
 5. **Tests added/reworked** (see §11); integration test now skips gracefully
    instead of erroring when the stack is down.
 
+### Hardening round 2 (same session)
+
+Fixes for the HIGH findings from the independent review (§13):
+
+- **B1 — evidence forgery closed.** New `require_ci_actor` (`api/security.py`):
+  `PATCH /mrps/{id}/evidence` now demands an `X-Acting-As: ci:/system:` identity
+  and, when set, a matching `SASE_CI_TOKEN`/`X-CI-Token` pair; audit rows use that
+  real actor id instead of hardcoded `ci-pipeline`.
+- **B2 — perimeter token.** Optional shared-secret middleware in `api/main.py`:
+  with `SASE_API_TOKEN` set, every request needs header `X-API-Token`; unset keeps
+  local dev unchanged.
+- **B3 — Agent Run terminal state machine.** `assert_run_patchable` (`api/gates.py`)
+  rejects unknown statuses (422) and any patch on a completed/failed/blocked run
+  (409) — provenance of finished runs is immutable per §3.7.8.
+- **B4 — append-only audit enforced + guarded reads.** `migrations/002_audit_lockdown.sql`
+  adds BEFORE UPDATE/DELETE triggers on `audit_log` (apply manually to existing
+  volumes); `GET /traceability/audit/*` now requires any well-formed actor via
+  `require_any_actor`. `/traceability/chain/{mrp_id}` left open by design.
+
 ---
 
 ## 13. Risk Register (independent review-agent findings)
