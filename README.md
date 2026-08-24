@@ -183,3 +183,16 @@ calling this API instead of curl).
    the Blueprint files — do not point the same vector index at both.
 5. Build the Coder Agent + Reflection loop + isolated Reviewer Agent,
    calling `/agent-runs`, `/crps`, and `/mrps` as they work.
+
+## Environment variables
+
+- **`SASE_API_TOKEN`** — optional perimeter authentication. When set
+  (non-empty), every request must carry header `X-API-Token` equal to it
+  or get a 401 (`api/main.py` middleware). Unset by default: local dev is
+  unaffected. Set it for any non-localhost deployment.
+- **`SASE_CI_TOKEN`** — shared secret backing CI evidence identity
+  (`api/security.py: require_ci_actor`). When set, `PATCH /mrps/{id}/evidence`
+  additionally requires header `X-CI-Token` to match, so evidence can't be
+  forged anonymously. `docker-compose.yml` sets the placeholder
+  `dev-ci-token-change-me` — replace it with a real secret anywhere beyond
+  localhost.

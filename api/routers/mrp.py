@@ -4,7 +4,7 @@ from api.database import get_db
 from api import models, schemas, ids
 from api.audit import record_audit
 from api.gates import mrp_ready_for_merge, no_open_high_or_critical_crp_blocks_merge
-from api.security import require_human_actor
+from api.security import require_human_actor, require_ci_actor
 
 router = APIRouter(prefix="/mrps", tags=["mrp"])
 
@@ -52,19 +52,31 @@ def create_mrp(payload: schemas.MRPCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/{mrp_id}/evidence")
-def update_evidence(mrp_id: str, payload: schemas.MRPEvidenceUpdate, db: Session = Depends(get_db)):
+def update_evidence(
+    mrp_id: str,
+    payload: schemas.MRPEvidenceUpdate,
+    db: Session = Depends(get_db),
+    ci_actor: str = Depends(require_ci_actor),
+):
     """
-    Agents (test runner, linter, security scanner, reviewer agent) call this
-    incrementally as each check completes. Once all evidence is in, call
-    POST /mrps/{id}/check-ready to evaluate the §5.6.5 gate.
+    CI/machine actors (test runner, linter, security scanner) call this
+    incrementally as each check completes. Identity comes from the
+    X-Acting-As header (must start with 'ci:' or 'system:', optionally
+    backed by the shared SASE_CI_TOKEN — see api/security.py), never from
+    an unauthenticated request: otherwise anyone could forge gate-passing
+    evidence. Once all evidence is in, call POST /mrps/{id}/check-ready
+    to evaluate the §5.6.5 gate.
     """
     mrp = db.get(models.MRP, mrp_id)
     if not mrp:
         raise HTTPException(404, "MRP not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(mrp, field, value)
-    record_audit(db, actor_type="system", actor_id="ci-pipeline", action="update_mrp_evidence",
-                 artifact_type="MRP", artifact_id=mrp_id, context=payload.model_dump(exclude_unset=True))
+    record_audit(db,
+                 actor_type="ci" if ci_actor.startswith("ci:") else "system",
+                 actor_id=ci_actor, action="update_mrp_evidence",
+                 artifact_type="MRP", artifact_id=mrp_id,
+                 context=payload.model_dump(exclude_unset=True))
     db.commit()
     return {"id": mrp_id}
 
