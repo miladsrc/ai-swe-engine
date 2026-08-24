@@ -8,7 +8,8 @@ services:
       POSTGRES_PASSWORD: sase
       POSTGRES_DB: sase
     ports:
-      - "5432:5432"
+      # Host 5433: host 5432 is taken by another local Postgres instance
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
@@ -24,6 +25,10 @@ services:
       dockerfile: Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg2://sase:sase@postgres:5432/sase
+      # Local-dev placeholder for CI evidence identity (api/security.py:
+      # require_ci_actor). Replace with a real secret for anything beyond
+      # localhost — see README "Environment variables".
+      SASE_CI_TOKEN: "dev-ci-token-change-me"
     ports:
       - "8000:8000"
     depends_on:
