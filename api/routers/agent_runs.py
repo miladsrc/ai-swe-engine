@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from api.database import get_db
 from api import models, schemas, ids
 from api.audit import record_audit
-from api.gates import spec_must_be_human_validated_before_code_gen
+from api.gates import spec_must_be_human_validated_before_code_gen, assert_run_patchable
 
 router = APIRouter(prefix="/agent-runs", tags=["agent-runs"])
 
@@ -55,6 +55,10 @@ def update_agent_run(run_id: str, payload: schemas.AgentRunUpdate, db: Session =
     run = db.get(models.AgentRun, run_id)
     if not run:
         raise HTTPException(404, "Agent Run not found")
+
+    # Terminal-state machine (§3.7.8): unknown statuses rejected 422; runs
+    # already completed/failed/blocked are immutable provenance — 409.
+    assert_run_patchable(run.status, payload.status)
 
     run.status = payload.status
     if payload.reflection_iterations is not None:

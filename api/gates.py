@@ -7,14 +7,41 @@ Each function corresponds to a specific rule:
   spec_must_be_human_validated_before_code_gen  -> §3.5
   no_open_high_or_critical_crp_blocks_merge      -> §3.6.3, §3.7.8
   mrp_required_before_pr_review                  -> §5.6
-  mrp_must_pass_tests_and_security_before_ready  -> §5.6.5
-  agent_run_must_exist_for_generated_code        -> §3.7.8
+   mrp_must_pass_tests_and_security_before_ready  -> §5.6.5
+   agent_run_must_exist_for_generated_code        -> §3.7.8
+   assert_run_patchable                           -> §3.7.8 (terminal runs immutable)
 """
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from api.models import Spec, CRP, AgentRun, MRP
+
+ALLOWED_RUN_STATUSES = {"running", "completed", "failed", "blocked"}
+TERMINAL_RUN_STATUSES = {"completed", "failed", "blocked"}
+
+
+def assert_run_patchable(current_status: str | None, new_status: str) -> None:
+    """
+    Pure state-machine check for PATCH /agent-runs/{id}: the payload status
+    must be a known value, and a run that has already reached a terminal
+    state ('completed', 'failed', 'blocked') may not be patched at all —
+    its provenance (§3.7.8: which agent, with which inputs, produced what)
+    is history and must stay immutable.
+    """
+    if new_status not in ALLOWED_RUN_STATUSES:
+        raise HTTPException(
+            422,
+            f"Unknown Agent Run status {new_status!r}. Allowed values: "
+            f"{', '.join(sorted(ALLOWED_RUN_STATUSES))}.",
+        )
+    if current_status in TERMINAL_RUN_STATUSES:
+        raise HTTPException(
+            409,
+            f"Agent Run is already in terminal state '{current_status}'. Per "
+            f"§3.7.8 the provenance of finished runs is immutable — no field "
+            f"may be patched after completed/failed/blocked.",
+        )
 
 
 def spec_must_be_human_validated_before_code_gen(db: Session, spec_id: str) -> None:
