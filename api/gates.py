@@ -87,11 +87,14 @@ def agent_run_must_exist_for_generated_code(db: Session, agent_run_id: str | Non
         raise HTTPException(404, f"Agent Run {agent_run_id} not found")
 
 
-def mrp_ready_for_merge(mrp: MRP) -> tuple[bool, list[str]]:
+def mrp_ready_for_merge(db: Session, mrp: MRP) -> tuple[bool, list[str]]:
     """
     Returns (ready, blocking_reasons). This is the concrete check behind
     the CI/CD gating table in §5.6.5 / §3.7.8 — call it before allowing
     a merge, not just before displaying a status badge.
+
+    Bug fix: Query live CRP data instead of relying on stale open_crp_ids snapshot.
+    This ensures CRPs raised after MRP creation are caught.
     """
     reasons = []
     if mrp.unit_tests_status not in ("passed",):
@@ -104,8 +107,19 @@ def mrp_ready_for_merge(mrp: MRP) -> tuple[bool, list[str]]:
         reasons.append("no Spec referenced")
     if not mrp.blueprint_version:
         reasons.append("no Blueprint version referenced (unauditable per §3.7.8)")
-    if mrp.open_crp_ids:
-        reasons.append(f"open CRPs still attached: {mrp.open_crp_ids}")
+    # Query live CRP data instead of relying on stale snapshot
+    if mrp.spec_ids:
+        live_crps = db.execute(
+            select(CRP.id).where(
+                CRP.spec_id.in_(mrp.spec_ids),
+                CRP.status.in_(["open", "blocking"]),
+                CRP.severity.in_(["high", "critical"]),
+            )
+        ).scalars().all()
+        if live_crps:
+            # Handle both string IDs and ORM objects with .id attribute
+            crp_ids = [c.id if hasattr(c, 'id') else c for c in live_crps]
+            reasons.append(f"open High/Critical CRPs still unresolved: {', '.join(crp_ids)}")
     if mrp.status == "rejected":
         reasons.append("MRP was rejected in human review")
     return (len(reasons) == 0), reasons

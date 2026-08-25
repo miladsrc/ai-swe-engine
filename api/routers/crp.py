@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from api.database import get_db
 from api import models, schemas, ids
 from api.audit import record_audit
+from api.gates import assert_run_patchable
 
 router = APIRouter(prefix="/crps", tags=["crp"])
 
@@ -47,9 +48,11 @@ def create_crp(payload: schemas.CRPCreate, db: Session = Depends(get_db)):
 
     # If this run exists and severity is high/critical, mark the run blocked —
     # this is what §3.6.3 means by "must not proceed without human decision."
+    # Gate B3: must not patch a terminal run (§3.7.8).
     if payload.agent_run_id:
         run = db.get(models.AgentRun, payload.agent_run_id)
         if run and payload.severity in ("high", "critical"):
+            assert_run_patchable(run.status, "blocked")
             run.status = "blocked"
 
     record_audit(

@@ -66,19 +66,36 @@ def update_evidence(
     an unauthenticated request: otherwise anyone could forge gate-passing
     evidence. Once all evidence is in, call POST /mrps/{id}/check-ready
     to evaluate the §5.6.5 gate.
+
+    Phase 1: Evidence records now include provenance tagging (source: human | tool | llm).
     """
     mrp = db.get(models.MRP, mrp_id)
     if not mrp:
         raise HTTPException(404, "MRP not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    
+    # Phase 1: Validate provenance if provided
+    evidence_data = payload.model_dump(exclude_unset=True)
+    provenance = evidence_data.pop("provenance", None)
+    if provenance is not None:
+        VALID_PROVENANCES = {"human", "tool", "llm"}
+        if provenance not in VALID_PROVENANCES:
+            raise HTTPException(422, f"provenance must be one of {VALID_PROVENANCES}")
+    
+    for field, value in evidence_data.items():
         setattr(mrp, field, value)
+    
+    # Phase 1: Include provenance in audit context for traceability
+    audit_context = evidence_data.copy()
+    if provenance:
+        audit_context["provenance"] = provenance
+    
     record_audit(db,
                  actor_type="ci" if ci_actor.startswith("ci:") else "system",
                  actor_id=ci_actor, action="update_mrp_evidence",
                  artifact_type="MRP", artifact_id=mrp_id,
-                 context=payload.model_dump(exclude_unset=True))
+                 context=audit_context)
     db.commit()
-    return {"id": mrp_id}
+    return {"id": mrp_id, "provenance": provenance}
 
 
 @router.post("/{mrp_id}/check-ready")
@@ -93,7 +110,7 @@ def check_ready(mrp_id: str, db: Session = Depends(get_db)):
     if not mrp:
         raise HTTPException(404, "MRP not found")
 
-    ready, reasons = mrp_ready_for_merge(mrp)
+    ready, reasons = mrp_ready_for_merge(db, mrp)
     mrp.status = "ready_for_human_review" if ready else "needs_revision"
     record_audit(db, actor_type="system", actor_id="ci-pipeline", action="check_mrp_ready",
                  artifact_type="MRP", artifact_id=mrp_id, result=mrp.status,
@@ -126,7 +143,7 @@ def human_decision(
 
     if payload.decision == "approved":
         no_open_high_or_critical_crp_blocks_merge(db, mrp.spec_ids or [])
-        ready, reasons = mrp_ready_for_merge(mrp)
+        ready, reasons = mrp_ready_for_merge(db, mrp)
         if not ready:
             raise HTTPException(409, f"Cannot approve: {', '.join(reasons)}")
 

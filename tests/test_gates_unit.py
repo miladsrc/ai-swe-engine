@@ -37,66 +37,7 @@ def make_mrp(**overrides):
     return SimpleNamespace(**base)
 
 
-# ------------------------------------------------------- MRP ready gate ----
-
-def test_mrp_not_ready_when_no_evidence():
-    ready, reasons = mrp_ready_for_merge(make_mrp())
-    assert not ready
-    assert "unit tests not passing" in reasons
-    assert "security scan not passed" in reasons
-    assert "no Spec referenced" in reasons
-    assert "no Blueprint version referenced (unauditable per §3.7.8)" in reasons
-
-
-def test_mrp_ready_when_all_gates_satisfied():
-    ready, reasons = mrp_ready_for_merge(make_mrp(
-        unit_tests_status="passed",
-        integration_tests_status="passed",
-        security_scan_status="passed",
-        spec_ids=["SPEC-AUTH-SESSION-REFRESH"],
-        blueprint_version="v1.0",
-    ))
-    assert ready
-    assert reasons == []
-
-
-def test_mrp_integration_tests_may_be_na_or_missing():
-    for status in ("not_applicable", None):
-        ready, _ = mrp_ready_for_merge(make_mrp(
-            unit_tests_status="passed",
-            integration_tests_status=status,
-            security_scan_status="passed",
-            spec_ids=["S1"],
-            blueprint_version="v1.0",
-        ))
-        assert ready, f"integration_tests_status={status!r} should not block"
-
-
-def test_mrp_blocked_by_failed_unit_or_security():
-    assert not mrp_ready_for_merge(make_mrp(unit_tests_status="failed"))[0]
-    assert not mrp_ready_for_merge(make_mrp(security_scan_status="failed"))[0]
-
-
-def test_mrp_blocked_by_open_crps():
-    ready, reasons = mrp_ready_for_merge(make_mrp(
-        unit_tests_status="passed", security_scan_status="passed",
-        spec_ids=["S1"], blueprint_version="v1.0",
-        open_crp_ids=["CRP-AUTH-2026-001"],
-    ))
-    assert not ready
-    assert any("open CRPs" in r for r in reasons)
-
-
-def test_mrp_blocked_by_rejection():
-    ready, reasons = mrp_ready_for_merge(make_mrp(
-        unit_tests_status="passed", security_scan_status="passed",
-        spec_ids=["S1"], blueprint_version="v1.0", status="rejected",
-    ))
-    assert not ready
-    assert any("rejected" in r for r in reasons)
-
-
-# ------------------------------------ CRP merge-block gate (no real db) ----
+# --------------------------------------- MRP ready gate (with live CRP query) ---
 
 class _FakeResult:
     def __init__(self, items):
@@ -114,8 +55,8 @@ class _FakeDb:
     gate's decision logic, not Postgres.
     """
 
-    def __init__(self, filtered_crps):
-        self._crps = filtered_crps
+    def __init__(self, filtered_crps=None):
+        self._crps = filtered_crps or []
 
     def execute(self, stmt):
         return _FakeResult(self._crps)
@@ -124,6 +65,67 @@ class _FakeDb:
 def _crp(id):
     return SimpleNamespace(id=id)
 
+
+def test_mrp_not_ready_when_no_evidence():
+    ready, reasons = mrp_ready_for_merge(_FakeDb(), make_mrp())
+    assert not ready
+    assert "unit tests not passing" in reasons
+    assert "security scan not passed" in reasons
+    assert "no Spec referenced" in reasons
+    assert "no Blueprint version referenced (unauditable per §3.7.8)" in reasons
+
+
+def test_mrp_ready_when_all_gates_satisfied():
+    ready, reasons = mrp_ready_for_merge(_FakeDb(), make_mrp(
+        unit_tests_status="passed",
+        integration_tests_status="passed",
+        security_scan_status="passed",
+        spec_ids=["SPEC-AUTH-SESSION-REFRESH"],
+        blueprint_version="v1.0",
+    ))
+    assert ready
+    assert reasons == []
+
+
+def test_mrp_integration_tests_may_be_na_or_missing():
+    for status in ("not_applicable", None):
+        ready, _ = mrp_ready_for_merge(_FakeDb(), make_mrp(
+            unit_tests_status="passed",
+            integration_tests_status=status,
+            security_scan_status="passed",
+            spec_ids=["S1"],
+            blueprint_version="v1.0",
+        ))
+        assert ready, f"integration_tests_status={status!r} should not block"
+
+
+def test_mrp_blocked_by_failed_unit_or_security():
+    assert not mrp_ready_for_merge(_FakeDb(), make_mrp(unit_tests_status="failed"))[0]
+    assert not mrp_ready_for_merge(_FakeDb(), make_mrp(security_scan_status="failed"))[0]
+
+
+def test_mrp_blocked_by_open_crps():
+    """Test that live CRP query blocks merge (not stale snapshot)."""
+    ready, reasons = mrp_ready_for_merge(
+        _FakeDb([_crp("CRP-AUTH-2026-001")]),
+        make_mrp(
+            unit_tests_status="passed", security_scan_status="passed",
+            spec_ids=["S1"], blueprint_version="v1.0",
+        ))
+    assert not ready
+    assert any("open High/Critical CRPs" in r for r in reasons)
+
+
+def test_mrp_blocked_by_rejection():
+    ready, reasons = mrp_ready_for_merge(_FakeDb(), make_mrp(
+        unit_tests_status="passed", security_scan_status="passed",
+        spec_ids=["S1"], blueprint_version="v1.0", status="rejected",
+    ))
+    assert not ready
+    assert any("rejected" in r for r in reasons)
+
+
+# ------------------------------------ CRP merge-block gate (no real db) ----
 
 def test_crp_gate_blocks_on_open_high_or_critical():
     db = _FakeDb([_crp("CRP-1"), _crp("CRP-2")])
@@ -292,3 +294,60 @@ def test_no_perimeter_token_needed_when_unset(monkeypatch):
     monkeypatch.delenv("SASE_API_TOKEN", raising=False)
     r = client.get("/health")  # no header at all
     assert r.status_code == 200
+
+
+# ----------------------------------------- Phase 1 regression tests ----
+
+def test_crp_bypass_blocked_on_terminal_run():
+    """
+    Regression test for Bug 1: CRP endpoint must not bypass assert_run_patchable.
+    A terminal run (completed/failed/blocked) should not be flipped back to blocked.
+    """
+    from api.gates import assert_run_patchable
+    
+    # This should raise 409 because the run is already terminal
+    for terminal_status in ("completed", "failed", "blocked"):
+        with pytest.raises(HTTPException) as exc:
+            assert_run_patchable(terminal_status, "blocked")
+        assert exc.value.status_code == 409, f"Terminal status {terminal_status!r} should block patch"
+        assert "§3.7.8" in exc.value.detail or "immutable" in exc.value.detail
+
+
+def test_mrp_ready_uses_live_crp_query():
+    """
+    Regression test for Bug 2: mrp_ready_for_merge must query live CRP data,
+    not rely on stale open_crp_ids snapshot.
+    """
+    # Create a fake db with one open CRP
+    fake_db = _FakeDb([_crp("CRP-TEST-001")])
+    mrp = make_mrp(
+        unit_tests_status="passed",
+        integration_tests_status="passed",
+        security_scan_status="passed",
+        spec_ids=["SPEC-TEST"],
+        blueprint_version="v1.0",
+        open_crp_ids=[],  # Empty snapshot - but live query finds CRP
+    )
+    ready, reasons = mrp_ready_for_merge(fake_db, mrp)
+    assert not ready
+    assert any("open High/Critical CRPs" in r for r in reasons)
+    assert "CRP-TEST-001" in reasons[0]
+
+
+def test_mrp_ready_passes_when_no_live_crps():
+    """
+    mrp_ready_for_merge should pass when live CRP query returns nothing,
+    even if open_crp_ids snapshot has stale entries.
+    """
+    fake_db = _FakeDb([])  # No live CRPs
+    mrp = make_mrp(
+        unit_tests_status="passed",
+        integration_tests_status="passed",
+        security_scan_status="passed",
+        spec_ids=["SPEC-TEST"],
+        blueprint_version="v1.0",
+        open_crp_ids=["STALE-CRP-001"],  # Stale snapshot - but live query finds nothing
+    )
+    ready, reasons = mrp_ready_for_merge(fake_db, mrp)
+    assert ready
+    assert reasons == []
