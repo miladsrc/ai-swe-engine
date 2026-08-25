@@ -1,198 +1,326 @@
-# SASE Engine — Traceability Backbone (Phase 1)
+# SASE Engine — Offline AI Development Platform
 
-This is the first real slice of the AI Software Engineering Engine, built
-against the SASE (Structured Agentic Software Engineering) framework.
-It implements **roadmap step 2**: the traceability backbone. Nothing
-else in the roadmap — Blueprint authoring beyond the two seed files
-here, Structured RAG, the Product/Spec/Coder/Reviewer agents themselves,
-Ollama integration — is built yet. This is deliberate: per the roadmap,
-those shouldn't be built until this layer can prove an end-to-end chain
-works.
+An autonomous software engineering platform that runs entirely offline using local
+language models (Ollama/Qwen). Built against the SASE (Structured Agentic
+Software Engineering) framework, it implements a governed development chain where
+every code change is traceable, auditable, and requires human approval at
+critical gates.
 
-## What's actually here
+## What it does
 
-- **Postgres schema** (`migrations/001_init.sql`) for every artifact in
-  the chain: Project, PRD, User Story, Acceptance Criteria, Spec,
-  Blueprint, Prompt, Agent Run, CRP, MRP, VCR, and an append-only audit
-  log.
-- **A FastAPI service** (`api/`) exposing that schema as a real API,
-  with the paper's hard rules enforced in code (`api/gates.py`), not
-  just documented:
-  - A Spec cannot be used to start code-generation Agent Run until a
-    human has called `POST /specs/{id}/validate` (§3.5).
-  - An MRP cannot be approved while a High/Critical CRP tied to its
-    Specs is still open (§3.6.3).
-  - `POST /mrps/{id}/check-ready` implements the exact gate table from
-    §5.6.5 (tests passing, security scan passed, Spec/Blueprint
-    referenced, no open CRPs).
-  - **Human-decision endpoints are identity-guarded** (`api/security.py`):
-    `/specs/{id}/validate`, `/mrps/{id}/human-decision`, and both VCR
-    endpoints require an `X-Acting-As: human:<name>` header — an agent can
-    no longer forge a human sign-off through the request body. This header
-    is the seam where real authn (OIDC/mTLS) plugs in later.
-- **Two seed Blueprints** (`blueprints/`): an org-wide error-handling
-  rule and the first Spring Boot stack Blueprint, both marked
-  `approved_by: <fill in — pending first human approval>` — deliberately
-  not pre-approved, because Blueprint approval is supposed to be a real
-  human action (§3.7.5), not a placeholder I fill in for you.
-- **The `.ai-engineering/` artifact tree** — currently empty directories
-  with a README each; this is where the human-readable Markdown/YAML
-  copy of each artifact lives, mirroring what's in Postgres.
+A local LLM (Qwen 2.5 Coder 7B on CPU) drafts requirements, writes real code,
+runs its own tests, and opens merge requests — but **cannot ship a single line
+without human approval**. Every action is recorded, every gate is enforced in
+code, and the full chain from idea to merged code is reconstructable.
 
-## What is NOT here yet (and why)
+## Architecture
 
-- **No LLM calls.** No Ollama, no Qwen, no DeepSeek. This sandbox has no
-  network access, so I couldn't pull models or test inference even if
-  I'd wired it up — and more importantly, per the roadmap, the
-  traceability backbone needs to prove itself with hand-authored
-  artifacts before an agent touches it. The `docker-compose.yml` has
-  Ollama/Qdrant/Redis commented in, ready for step 4 (Structured RAG)
-  and beyond.
-- **No agents.** The Product/Spec/Coder/Reviewer/Legacy-Discovery agents
-  described in the architecture docs are not implemented. This service
-  is what they'll call once they exist — it's the contract they write
-  against, built first so the contract is solid.
-- **No RAG.** No vector store, no chunking/reranking pipeline.
-
-## Running it
-
-You'll need Docker on your own machine (this environment can't run it
-for you — no network access here).
-
-```bash
-docker compose up --build
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        HUMAN DECISIONS                          │
+│  (validate specs, resolve CRPs via VCR, approve merges)         │
+└─────────────┬───────────────────────────────────────────────────┘
+              │ X-Acting-As: human:<name>
+              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   SASE TRACEABILITY ENGINE                      │
+│  FastAPI + PostgreSQL · api/                                     │
+│  Hard gates in api/gates.py (§3.5, §3.6.3, §5.6.5)            │
+│  Append-only audit log · Identity-guarded endpoints              │
+└─────────────┬───────────────────────────────────────────────────┘
+              │ API calls (enforced allowlists per role)
+              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     AGENT LAYER (agents/)                        │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
+│  │ Product  │ │   Spec   │ │  Coder   │ │Reviewer/ │          │
+│  │  Agent   │ │  Agent   │ │  Agent   │ │Reflection│          │
+│  │ draft    │ │ YAML     │ │ write    │ │ (planned)│          │
+│  │ PRD/US/AC│ │ spec     │ │ code+tests│ │          │          │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └──────────┘          │
+│       │            │            │                                │
+│       │            │     ┌──────┴──────┐                        │
+│       │            │     │  REAL EVIDENCE │                      │
+│       │            │     │ pytest exit code │                    │
+│       │            │     │ security scan    │                    │
+│       │            │     │ compile lint     │                    │
+│       │            │     └────────────────┘                      │
+└───────┼────────────┼────────────┼────────────────────────────────┘
+        │            │            │
+        ▼            ▼            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    LOCAL GIT WORKSPACE                           │
+│  IdeaProjects/<project>/                                         │
+│  Real .py files · Real pytest · Real git commits                │
+│  Committed with run_id + spec_id provenance                     │
+└─────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    LOCAL LLM (OFFLINE)                           │
+│  Ollama · qwen2.5-coder:7b q4 · CPU-only                       │
+│  localhost:11434 · No internet required                         │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-This starts Postgres (auto-applying `migrations/001_init.sql` on first
-boot) and the API on `http://localhost:8000`. Interactive API docs at
-`http://localhost:8000/docs`.
+## What's built
+
+### Traceability Engine (`api/`)
+- **Postgres schema** (`migrations/001_init.sql`) for every artifact: Project, PRD, User Story, Acceptance Criteria, Spec, Blueprint, Agent Run, CRP, MRP, VCR, audit log
+- **Hard gates in code** (`api/gates.py`), not just documentation:
+  - Specs cannot enter code-gen until human-validated (§3.5)
+  - MRPs cannot merge while High/Critical CRPs are open (§3.6.3)
+  - `POST /mrps/{id}/check-ready` implements §5.6.5 gate table exactly
+- **Identity-guarded endpoints** (`api/security.py`):
+  - `/specs/{id}/validate`, `/mrps/{id}/human-decision`, VCR endpoints require `X-Acting-As: human:<name>`
+  - Evidence endpoints require `X-Acting-As: ci:<pipeline>` + optional `X-CI-Token`
+- **Append-only audit log** with REVOKE protection (triggers in `002_audit_lockdown.sql`)
+- **Optional perimeter auth** (`SASE_API_TOKEN` middleware)
+
+### Agent Layer (`agents/`)
+- **6 role-defined agents** with separate identities and strict allowlists:
+  - `agent:product` — drafts PRD, user stories, acceptance criteria
+  - `agent:spec` — converts story+ACs into YAML technical spec
+  - `agent:coder` — writes real code, runs tests, opens MRs, raises CRPs
+  - `agent:reviewer` / `agent:reflection` — defined but not yet active
+  - `ci:test-runner` — LLM-free, records real pytest evidence
+- **Prompt contracts** (`agents/prompts.py`, `agents/coder_prompts.py`):
+  - Explicit output formats (PRD sections, story form, YAML schema)
+  - WORKED EXAMPLES for small models
+  - ENGINEERING RULES (deterministic tests, subprocess invocation, env-overridable storage)
+- **Reflection loop**: bounded (configurable `max_repairs`), evidence-driven (pytest output fed back), self-check checklists in repair prompts
+- **Tolerant parsing**: handles backticked YAML from LLMs, code-fence stripping, fabricated AC ref enforcement
+
+### Local LLM Integration (`agents/llm.py`)
+- **Ollama backend**: `OllamaLLM` calls local `localhost:11434`
+- **Template fallback**: `TemplateLLM` for deterministic offline testing
+- **Auto-selection**: `pick_backend()` prefers Ollama, falls back to templates
+- **No governance actions**: LLM only produces content; IDs, gates, audit are server-side
+
+### Coder Agent (`agents/coder_agent.py`)
+The full autonomous development loop:
+
+```
+validated spec → LLM generates code files → write to local git repo →
+REAL pytest subprocess → if fails: reflection loop (up to N repairs) →
+security scan (pattern-based, no LLM opinion) → compileall lint →
+git commit with provenance → Agent Run Record → MRP → CI evidence →
+if spec has open_questions: raise HIGH CRP (blocks merge) →
+HUMAN GATES: VCR resolve + merge decision
+```
+
+Key properties:
+- **Real evidence**: pytest exit codes, not LLM judgment
+- **Provenance**: every commit carries run_id + spec_id
+- **Immutability**: terminal agent runs cannot be patched (§3.7.8)
+- **Workspace sandbox**: refuses to write outside the project directory
+
+## Quick start
+
+### Prerequisites
+- Docker Desktop (for Postgres + API)
+- Ollama installed locally (for LLM inference)
+- Python 3.12+ with pytest
+
+### 1. Start the stack
+```bash
+docker compose up -d
+# Postgres on localhost:5433, API on localhost:8000
+# Migrations auto-apply on first boot
+```
+
+### 2. Install and pull the model
+```bash
+# Install Ollama (Windows)
+winget install Ollama.Ollama
+
+# Pull the coding model (4.36GB, runs on CPU)
+ollama pull qwen2.5-coder:7b
+```
+
+### 3. Run the full pipeline
+```bash
+# Full chain: PRD → story → AC → spec (offline templates)
+python -m agents.orchestrator --offline
+
+# Full chain via Qwen (requires Ollama running)
+python -m agents.orchestrator --online
+
+# Code phase only (requires validated spec)
+python -m agents.orchestrator --online --code --spec SPEC-TODO-CORE-R4
+
+# Regenerate only the spec (requires prior full run)
+python -m agents.orchestrator --online --spec-only --name core-v2
+```
+
+### 4. Human gates (you must run these)
+```bash
+# Validate a spec (Gate 1)
+curl -X POST localhost:8000/specs/<spec-id>/validate \
+  -H 'X-Acting-As: human:<your-name>' -d '{}'
+
+# Resolve a CRP via VCR
+curl -X POST localhost:8000/vcrs \
+  -H 'X-Acting-As: human:<your-name>' \
+  -H 'Content-Type: application/json' \
+  -d '{"related_artifact_type":"CRP","related_artifact_id":"<crp-id>",...}'
+
+# Approve a merge
+curl -X POST localhost:8000/mrps/<mrp-id>/human-decision \
+  -H 'X-Acting-As: human:<your-name>' \
+  -d '{"decision":"approved"}'
+```
 
 ## Proving the chain works — a manual walkthrough
 
-This is the concrete version of the demo's exit criteria (v3 §1). Run
-these in order against the API (curl or the `/docs` UI) to prove the
-mechanism before trusting it with a real agent:
-
 ```bash
 # 1. Create a project
-curl -X POST localhost:8000/projects -H 'Content-Type: application/json' \
-  -d '{"id":"demo-springboot","name":"Demo Spring Boot App","stack":"springboot"}'
+curl -X POST localhost:8000/projects \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"demo-app","name":"Demo App","stack":"python-cli"}'
 
 # 2. Create a PRD
-curl -X POST localhost:8000/prds -H 'Content-Type: application/json' \
-  -d '{"project_id":"demo-springboot","domain":"AUTH","title":"User session auth",
-       "body_ref":".ai-engineering/prd/PRD-AUTH-001.md","created_by":"human:you"}'
-# -> note the returned id, e.g. PRD-AUTH-001
-
-# 3. Create a User Story against it, then an Acceptance Criterion
-curl -X POST localhost:8000/user-stories -H 'Content-Type: application/json' \
-  -d '{"prd_id":"PRD-AUTH-001","domain":"AUTH","body_ref":".ai-engineering/user-stories/US-AUTH-001.md"}'
-
-curl -X POST localhost:8000/acceptance-criteria -H 'Content-Type: application/json' \
-  -d '{"user_story_id":"US-AUTH-001","body_ref":".ai-engineering/acceptance-criteria/AC-AUTH-001-01.md"}'
-
-# 4. Create a Spec — try starting a code-gen Agent Run against it BEFORE
-#    validating it, and confirm you get a 409 (this proves the §3.5 gate
-#    actually blocks, not just documents, premature code-gen)
-curl -X POST localhost:8000/specs -H 'Content-Type: application/json' \
-  -d '{"project_id":"demo-springboot","user_story_id":"US-AUTH-001","domain":"AUTH",
-       "name":"session-refresh","body_ref":".ai-engineering/specs/SPEC-AUTH-SESSION-REFRESH.yaml"}'
-
-curl -X POST localhost:8000/agent-runs -H 'Content-Type: application/json' \
-  -d '{"project_id":"demo-springboot","agent_role":"coder_agent","task_type":"code_generation",
-       "model_name":"DeepSeek-671B","model_short":"DS","spec_id":"SPEC-AUTH-SESSION-REFRESH"}'
-# -> expect HTTP 409, gate working as intended
-
-# 5. Now validate the Spec and retry — expect success this time.
-#    Human-decision endpoints require the X-Acting-As header with a
-#    'human:' identity (see api/security.py) — an agent cannot forge it.
-curl -X POST localhost:8000/specs/SPEC-AUTH-SESSION-REFRESH/validate \
+curl -X POST localhost:8000/prds \
   -H 'Content-Type: application/json' \
-  -H 'X-Acting-As: human:you' -d '{}'
+  -d '{"project_id":"demo-app","domain":"TODO","title":"Todo CLI",
+       "body_ref":"A minimal command-line todo app","created_by":"human:m.barani"}'
 
-curl -X POST localhost:8000/agent-runs -H 'Content-Type: application/json' \
-  -d '{"project_id":"demo-springboot","agent_role":"coder_agent","task_type":"code_generation",
-       "model_name":"DeepSeek-671B","model_short":"DS","spec_id":"SPEC-AUTH-SESSION-REFRESH"}'
-# -> note the returned run id, e.g. RUN-DS-2026-00001
-
-# 6. Deliberately raise a CRP against this run, mirroring the paper's own
-#    worked example (§3.6.4 — token refresh expiry ambiguity)
-curl -X POST localhost:8000/crps -H 'Content-Type: application/json' \
-  -d '{"project_id":"demo-springboot","domain":"AUTH","agent_run_id":"RUN-DS-2026-00001",
-       "spec_id":"SPEC-AUTH-SESSION-REFRESH","severity":"high",
-       "blocking_issue_title":"Ambiguous refresh-token expiry policy",
-       "blocking_issue_body":"PRD does not specify exact expiry duration or policy differences per role.",
-       "required_decision":"What refresh-token expiry should apply per role?",
-       "required_role":"Security Architect"}'
-# -> note the returned id, e.g. CRP-AUTH-2026-001
-
-# 7. Resolve it as a VCR
-curl -X POST localhost:8000/vcrs \
+# 3. Create a User Story
+curl -X POST localhost:8000/user-stories \
   -H 'Content-Type: application/json' \
-  -H 'X-Acting-As: human:security-architect' \
-  -d '{"related_artifact_type":"CRP","related_artifact_id":"CRP-AUTH-2026-001",
-       "decision_status":"approved_with_changes","selected_option":"24h normal / 4h admin",
-       "rationale":"Balances UX with risk for privileged accounts.","update_spec":true}'
+  -d '{"prd_id":"PRD-TODO-001","domain":"TODO","body_ref":"As a user, I want to add and list tasks."}'
 
-# 8. Create an MRP for the resulting PR, add evidence, and confirm the
-#    §5.6.5 gate blocks it until tests/security are recorded as passed
-curl -X POST localhost:8000/mrps -H 'Content-Type: application/json' \
-  -d '{"project_id":"demo-springboot","pull_request_number":1,"branch_name":"feature/session-refresh",
-       "created_by_agent_run":"RUN-DS-2026-00001","prd_id":"PRD-AUTH-001",
-       "spec_ids":["SPEC-AUTH-SESSION-REFRESH"],"blueprint_id":"BP-SPRINGBOOT-001","blueprint_version":"v1.0"}'
+# 4. Create an Acceptance Criterion
+curl -X POST localhost:8000/acceptance-criteria \
+  -H 'Content-Type: application/json' \
+  -d '{"user_story_id":"US-TODO-001","body_ref":"- todo add \"text\" persists and prints id"}'
+
+# 5. Create a Spec
+curl -X POST localhost:8000/specs \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"demo-app","user_story_id":"US-TODO-001","domain":"TODO",
+       "name":"core","body_ref":"artifact: todo-cli\nbehavior:\n  add: ..."}'
+
+# 6. Try starting code-gen BEFORE validation — expect 409 (gate working)
+curl -X POST localhost:8000/agent-runs \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"demo-app","agent_role":"coder_agent","task_type":"code_generation",
+       "model_name":"qwen2.5-coder:7b","model_short":"QW","spec_id":"SPEC-TODO-CORE"}'
+# -> HTTP 409, gate blocks premature code-gen
+
+# 7. Validate the spec (human-only)
+curl -X POST localhost:8000/specs/SPEC-TODO-CORE/validate \
+  -H 'Content-Type: application/json' \
+  -H 'X-Acting-As: human:m.barani' -d '{}'
+
+# 8. Now code-gen succeeds
+curl -X POST localhost:8000/agent-runs \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"demo-app","agent_role":"coder_agent","task_type":"code_generation",
+       "model_name":"qwen2.5-coder:7b","model_short":"QW","spec_id":"SPEC-TODO-CORE"}'
+# -> note run id, e.g. RUN-QW-2026-00001
+
+# 9. Create MRP + check readiness
+curl -X POST localhost:8000/mrps \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"demo-app","pull_request_number":1,"branch_name":"agent/todo-core",
+       "created_by_agent_run":"RUN-QW-2026-00001","prd_id":"PRD-TODO-001",
+       "spec_ids":["SPEC-TODO-CORE"],"blueprint_id":"BP-PYTHON-CLI-001",
+       "blueprint_version":"v1.0"}'
 
 curl -X POST localhost:8000/mrps/MRP-PR-1/check-ready
-# -> expect ready: false, with reasons listing missing test/security evidence
+# -> expect ready: false (missing evidence)
 
-curl -X PATCH localhost:8000/mrps/MRP-PR-1/evidence -H 'Content-Type: application/json' \
+# 10. Record CI evidence (token-authenticated)
+curl -X PATCH localhost:8000/mrps/MRP-PR-1/evidence \
+  -H 'Content-Type: application/json' \
+  -H 'X-Acting-As: ci:test-runner' \
+  -H 'X-CI-Token: dev-ci-token-change-me' \
   -d '{"unit_tests_status":"passed","security_scan_status":"passed"}'
 
-curl -X POST localhost:8000/mrps/MRP-PR-1/check-ready
-# -> expect ready: true
-
-# 9. Record the human merge decision
+# 11. Approve merge (human-only)
 curl -X POST localhost:8000/mrps/MRP-PR-1/human-decision \
   -H 'Content-Type: application/json' \
-  -H 'X-Acting-As: human:you' \
+  -H 'X-Acting-As: human:m.barani' \
   -d '{"decision":"approved"}'
 
-# 10. Pull the full chain and confirm it's traceable end-to-end
+# 12. Verify full traceability
 curl localhost:8000/traceability/chain/MRP-PR-1
 # -> fully_traceable: true
 ```
 
-If all ten steps behave as annotated, the traceability backbone is
-proven and it's safe to move on to roadmap step 3 (writing the rest of
-the Spring Boot Blueprint) and step 5 (the actual Product/Spec agents
-calling this API instead of curl).
-
-## Next steps (in order, per the architecture docs)
-
-1. Get a human to actually review and approve the two seed Blueprints
-   (fill in `approved_by`, expand `BP-SPRINGBOOT-001.md` with whatever
-   else your team's conventions require).
-2. Wire up Ollama + pull Qwen-72B and DeepSeek-671B (commented block in
-   `docker-compose.yml`), on a machine with the network access and GPU
-   this sandbox doesn't have.
-3. Build the Product Agent and Spec Agent as thin services that call
-   this API's `/prds`, `/user-stories`, `/acceptance-criteria`, `/specs`
-   endpoints instead of a human doing it by hand — but keep the
-   `POST /specs/{id}/validate` step human-only, per §3.5.
-4. Build the Structured RAG pipeline (chunking/embedding/reranking/
-   access-control) as its own service, kept structurally separate from
-   the Blueprint files — do not point the same vector index at both.
-5. Build the Coder Agent + Reflection loop + isolated Reviewer Agent,
-   calling `/agent-runs`, `/crps`, and `/mrps` as they work.
-
 ## Environment variables
 
-- **`SASE_API_TOKEN`** — optional perimeter authentication. When set
-  (non-empty), every request must carry header `X-API-Token` equal to it
-  or get a 401 (`api/main.py` middleware). Unset by default: local dev is
-  unaffected. Set it for any non-localhost deployment.
-- **`SASE_CI_TOKEN`** — shared secret backing CI evidence identity
-  (`api/security.py: require_ci_actor`). When set, `PATCH /mrps/{id}/evidence`
-  additionally requires header `X-CI-Token` to match, so evidence can't be
-  forged anonymously. `docker-compose.yml` sets the placeholder
-  `dev-ci-token-change-me` — replace it with a real secret anywhere beyond
-  localhost.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DATABASE_URL` | `postgresql+psycopg2://sase:sase@postgres:5432/sase` | Postgres connection (docker-compose sets this) |
+| `SASE_API_TOKEN` | _(unset)_ | Optional perimeter auth. When set, every request needs `X-API-Token` header |
+| `SASE_CI_TOKEN` | `dev-ci-token-change-me` | Shared secret for CI evidence identity. Replace for any non-localhost deployment |
+| `TODO_STORE` | `todos.json` | Data file path for todo-cli (agent test override: `TODO_STORE=/tmp/test.json`) |
+| `CODER_MAX_REPAIRS` | `5` | Max reflection loop iterations before marking run as failed |
+
+## Project structure
+
+```
+ai-swe-engine/
+├── api/                        # Traceability engine (FastAPI)
+│   ├── main.py                 # App entry, routers, perimeter middleware
+│   ├── models.py               # SQLAlchemy models
+│   ├── schemas.py              # Pydantic request/response schemas
+│   ├── gates.py                # Hard gates (§3.5, §3.6.3, §5.6.5)
+│   ├── security.py             # Identity-guarded endpoints
+│   ├── ids.py                  # Deterministic ID generation
+│   ├── audit.py                # Append-only audit log
+│   ├── database.py             # Engine/session setup
+│   └── routers/                # Endpoint implementations
+│       ├── projects.py
+│       ├── requirements.py     # PRDs, stories, ACs, specs
+│       ├── agent_runs.py       # Agent run records + PATCH
+│       ├── crp.py              # Conflict Resolution Packages
+│       ├── mrp.py              # Merge Request Packages
+│       ├── vcr.py              # Version Control Resolutions
+│       └── traceability.py     # Chain reconstruction
+├── agents/                     # LLM-powered agent layer
+│   ├── config.py               # 6 role definitions + allowlists
+│   ├── engine_client.py        # Identity-aware HTTP client
+│   ├── llm.py                  # Ollama + template backends
+│   ├── prompts.py              # Product/Spec agent prompts
+│   ├── coder_prompts.py        # Coder agent prompts + repair
+│   ├── product_agent.py        # PRD/story/AC generation
+│   ├── spec_agent.py           # YAML spec generation + AC enforcement
+│   ├── coder_agent.py          # Full coding loop + reflection
+│   └── orchestrator.py         # Pipeline entry point (--online/--offline/--code)
+├── migrations/
+│   ├── 001_init.sql            # Full schema
+│   └── 002_audit_lockdown.sql  # REVOKE protection on audit_log
+├── blueprints/                 # Seed blueprints (org-wide + stack-specific)
+├── tests/
+│   ├── test_gates_unit.py      # Gate logic (DB-free)
+│   ├── test_agents_unit.py     # Agent role separation
+│   ├── test_coder_unit.py      # Coder parsing + security scan
+│   └── test_traceability_chain.py  # Full E2E (requires running stack)
+├── docker-compose.yml          # Postgres + API containers
+└── README.md                   # This file
+```
+
+## What's NOT here yet
+
+- **Reviewer / Reflection agents**: roles defined in `config.py` with allowlists, but no implementation. The coder's built-in reflection loop handles the immediate need; a separate reviewer agent is the next step.
+- **RAG pipeline**: no vector store, chunking, or reranking. Blueprints are read as plain YAML.
+- **OIDC/mTLS**: `X-Acting-As` is a seam, not real authn. Production identity comes later.
+- **Alembic migrations**: schema changes are manual SQL in `migrations/`.
+- **Agent-run terminal-state guard in CRP router**: `POST /crps` sets `run.status = "blocked"` by direct assignment, bypassing `assert_run_patchable`. Known engine bug, documented in code.
+
+## Testing
+
+```bash
+# Unit tests (no stack required)
+python -m pytest tests/ -q --ignore=tests/test_traceability_chain.py
+
+# Full E2E (requires docker compose up)
+python -m pytest tests/test_traceability_chain.py -v
+```
+
+## License
+
+Internal use — Sahba platform / SIDG.

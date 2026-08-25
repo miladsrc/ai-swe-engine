@@ -325,7 +325,7 @@ internal compose network in air-gapped deployments.
 
 ---
 
-## 11. Testing
+## 13. Testing
 
 | Suite | Needs live stack? | Status |
 |---|---|---|
@@ -341,7 +341,7 @@ Run: `<venv-python> -m pytest tests/test_gates_unit.py -v` from project root.
 
 ---
 
-## 12. Change Log (2026-08-24 session)
+## 14. Change Log (2026-08-24 session)
 
 Fixes applied after initial full-project read (all verified by tests):
 
@@ -381,7 +381,7 @@ Fixes for the HIGH findings from the independent review (§13):
 
 ---
 
-## 13. Risk Register (independent review-agent findings)
+## 15. Risk Register (independent review-agent findings)
 
 Verdict: **conditional approve for phase-1 internal use** — strong gate
 architecture, but not yet load-bearing. Do not connect real agents or expose
@@ -421,7 +421,7 @@ negative-path gate tests exist.
 
 ---
 
-## 14. Operational Readiness
+## 16. Operational Readiness
 
 Order in which things break first in production (per review):
 
@@ -441,7 +441,7 @@ port, document backup procedure, wire the unit tests into CI.
 
 ---
 
-## 15. Roadmap
+## 17. Roadmap
 
 From README, in order:
 
