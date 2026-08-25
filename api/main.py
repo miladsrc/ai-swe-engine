@@ -2,7 +2,7 @@ import os
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from api.routers import projects, requirements, agent_runs, crp, mrp, vcr, traceability
+from api.routers import projects, requirements, agent_runs, crp, mrp, vcr, traceability, evidence
 
 app = FastAPI(
     title="SASE Traceability Backbone",
@@ -14,7 +14,7 @@ app = FastAPI(
         "This service owns artifact creation, gating, and audit — it does "
         "not itself call any LLM; agents call these endpoints as they work."
     ),
-    version="0.1.0",
+    version="0.2.0",
 )
 
 app.include_router(projects.router)
@@ -24,6 +24,7 @@ app.include_router(crp.router)
 app.include_router(mrp.router)
 app.include_router(vcr.router)
 app.include_router(traceability.router)
+app.include_router(evidence.router)
 
 
 @app.middleware("http")

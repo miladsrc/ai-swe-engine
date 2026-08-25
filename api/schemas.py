@@ -157,6 +157,9 @@ class MRPEvidenceUpdate(BaseModel):
     ai_review_status: Optional[str] = None
     ai_review_notes: Optional[List[str]] = None
     human_review_focus: Optional[str] = None
+    # Phase 1: Provenance tagging - tracks who/what produced this evidence
+    # Must be one of: "human", "tool", "llm"
+    provenance: Optional[str] = Field(None, description="Source of evidence: human | tool | llm")
 
 
 class MRPHumanDecision(BaseModel):
