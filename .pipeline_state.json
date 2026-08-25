@@ -1,0 +1,9 @@
+{
+  "project_id": "todo-cli",
+  "prd_id": "PRD-TODO-007",
+  "user_story_id": "US-TODO-007",
+  "story_body": "As a user, I want to add tasks to my to-do list using a single command, so that I can efficiently manage my daily tasks.",
+  "ac_id": "AC-TODO-007-01",
+  "ac_body": "- `todo add \"Buy groceries\"` -> The task \"Buy groceries\" should appear in the to-do list.\n- `todo add \"Call John\"` -> The task \"Call John\" should appear in the to-do list.\n- `todo add \"Read a book\"` -> The task \"Read a book\" should appear in the to-do list.\n- `todo list` -> The output should include all tasks added so far, in the order they were added.\n- `todo add \"\"` -> The command should return an error message indicating that the task description cannot be empty.\n- `todo add \"Buy groceries\" --priority high` -> The task \"Buy groceries\" should be marked as high priority in the to-do list.",
+  "spec_id": "SPEC-TODO-CORE-R2"
+}

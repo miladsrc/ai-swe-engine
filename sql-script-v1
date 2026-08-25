@@ -1,0 +1,302 @@
+create table id_counters
+(
+    key   text    not null
+        primary key,
+    value integer not null
+);
+
+alter table id_counters
+    owner to sase;
+
+create table projects
+(
+    id         text                                   not null
+        primary key,
+    name       text                                   not null,
+    stack      text                                   not null,
+    is_legacy  boolean                  default false not null,
+    created_at timestamp with time zone default now() not null
+);
+
+alter table projects
+    owner to sase;
+
+create table prds
+(
+    id         text                                                                   not null
+        primary key,
+    project_id text                                                                   not null
+        references projects,
+    title      text                                                                   not null,
+    body_ref   text                                                                   not null,
+    confidence artifact_confidence      default 'human_authored'::artifact_confidence not null,
+    created_by text                                                                   not null,
+    created_at timestamp with time zone default now()                                 not null
+);
+
+alter table prds
+    owner to sase;
+
+create table user_stories
+(
+    id         text                                                                   not null
+        primary key,
+    prd_id     text                                                                   not null
+        references prds,
+    body_ref   text                                                                   not null,
+    confidence artifact_confidence      default 'human_authored'::artifact_confidence not null,
+    created_at timestamp with time zone default now()                                 not null
+);
+
+alter table user_stories
+    owner to sase;
+
+create table acceptance_criteria
+(
+    id            text                                   not null
+        primary key,
+    user_story_id text                                   not null
+        references user_stories,
+    body_ref      text                                   not null,
+    created_at    timestamp with time zone default now() not null
+);
+
+alter table acceptance_criteria
+    owner to sase;
+
+create table specs
+(
+    id                 text                                                                   not null
+        primary key,
+    project_id         text                                                                   not null
+        references projects,
+    user_story_id      text
+        references user_stories,
+    format             text                     default 'yaml'::text                          not null,
+    body_ref           text                                                                   not null,
+    confidence         artifact_confidence      default 'human_authored'::artifact_confidence not null,
+    human_validated    boolean                  default false                                 not null,
+    human_validated_by text,
+    human_validated_at timestamp with time zone,
+    created_at         timestamp with time zone default now()                                 not null
+);
+
+alter table specs
+    owner to sase;
+
+create table blueprints
+(
+    id          text                                   not null,
+    version     text                                   not null,
+    scope       text                                   not null,
+    body_ref    text                                   not null,
+    approved_by text                                   not null,
+    change_note text,
+    created_at  timestamp with time zone default now() not null,
+    primary key (id, version)
+);
+
+alter table blueprints
+    owner to sase;
+
+create table prompts
+(
+    id           text                                   not null,
+    version      text                                   not null,
+    target_model text                                   not null,
+    purpose      text                                   not null,
+    body_ref     text                                   not null,
+    owner        text                                   not null,
+    approved_by  text,
+    change_note  text,
+    created_at   timestamp with time zone default now() not null,
+    primary key (id, version)
+);
+
+alter table prompts
+    owner to sase;
+
+create table agent_runs
+(
+    id                    text                                             not null
+        primary key,
+    project_id            text                                             not null
+        references projects,
+    agent_role            agent_role                                       not null,
+    task_type             text                                             not null,
+    prd_id                text
+        references prds,
+    user_story_id         text
+        references user_stories,
+    spec_id               text
+        references specs,
+    blueprint_ids         text[]                   default '{}'::text[]    not null,
+    model_provider        text                     default 'local'::text   not null,
+    model_name            text                                             not null,
+    model_version         text,
+    runtime               text                     default 'ollama'::text  not null,
+    temperature           numeric,
+    context_window        integer,
+    prompt_id             text,
+    prompt_version        text,
+    system_prompt_hash    text,
+    user_prompt_hash      text,
+    rag_retrieval_enabled boolean                  default false           not null,
+    rag_retrieved_doc_ids text[]                   default '{}'::text[]    not null,
+    rag_query_hash        text,
+    rag_index_version     text,
+    started_at            timestamp with time zone default now()           not null,
+    finished_at           timestamp with time zone,
+    status                text                     default 'running'::text not null,
+    reflection_iterations integer                  default 0               not null,
+    tools_used            text[]                   default '{}'::text[]    not null,
+    generated_files       text[]                   default '{}'::text[]    not null,
+    commit_hash           text,
+    mrp_id                text,
+    foreign key (prompt_id, prompt_version) references prompts
+);
+
+alter table agent_runs
+    owner to sase;
+
+create index idx_agent_runs_project
+    on agent_runs (project_id);
+
+create table crps
+(
+    id                   text                                                      not null
+        primary key,
+    project_id           text                                                      not null
+        references projects,
+    agent_run_id         text
+        references agent_runs,
+    prd_id               text
+        references prds,
+    user_story_id        text
+        references user_stories,
+    spec_id              text
+        references specs,
+    severity             crp_severity                                              not null,
+    status               crp_status               default 'open'::crp_status       not null,
+    blocking_issue_title text                                                      not null,
+    blocking_issue_body  text                                                      not null,
+    context_summary      jsonb                    default '{}'::jsonb              not null,
+    options_considered   jsonb                    default '[]'::jsonb              not null,
+    agent_recommendation jsonb,
+    required_decision    text                                                      not null,
+    required_role        text                                                      not null,
+    default_policy       text                     default 'block_generation'::text not null,
+    created_at           timestamp with time zone default now()                    not null
+);
+
+alter table crps
+    owner to sase;
+
+create index idx_crps_status
+    on crps (status, severity);
+
+create table vcrs
+(
+    id                     text                                         not null
+        primary key,
+    related_artifact_type  text                                         not null,
+    related_artifact_id    text                                         not null,
+    decision_status        text                                         not null,
+    selected_option        text,
+    rationale              text                                         not null,
+    decided_by             text                                         not null,
+    decided_role           text,
+    decided_at             timestamp with time zone default now()       not null,
+    update_prd             boolean                  default false       not null,
+    update_user_story      boolean                  default false       not null,
+    update_spec            boolean                  default false       not null,
+    update_blueprint       boolean                  default false       not null,
+    update_tests           boolean                  default false       not null,
+    required_updates       jsonb                    default '[]'::jsonb not null,
+    promoted_to_org_memory boolean                  default false       not null
+);
+
+alter table vcrs
+    owner to sase;
+
+create table mrps
+(
+    id                       text                                                 not null
+        primary key,
+    project_id               text                                                 not null
+        references projects,
+    pull_request_ref         text                                                 not null,
+    branch_name              text                                                 not null,
+    commit_hash              text,
+    created_by_agent_run     text
+        references agent_runs,
+    prd_id                   text
+        references prds,
+    user_story_ids           text[]                   default '{}'::text[]        not null,
+    acceptance_criteria_ids  text[]                   default '{}'::text[]        not null,
+    spec_ids                 text[]                   default '{}'::text[]        not null,
+    blueprint_id             text,
+    blueprint_version        text,
+    change_summary           text,
+    affected_modules         text[]                   default '{}'::text[]        not null,
+    unit_tests_status        text,
+    integration_tests_status text,
+    e2e_tests_status         text,
+    test_coverage_pct        numeric,
+    lint_status              text,
+    static_analysis_status   text,
+    complexity_status        text,
+    security_scan_status     text,
+    dependency_scan_status   text,
+    ai_review_status         text,
+    ai_review_notes          jsonb                    default '[]'::jsonb         not null,
+    human_review_focus       text,
+    open_crp_ids             text[]                   default '{}'::text[]        not null,
+    status                   mrp_status               default 'draft'::mrp_status not null,
+    human_reviewer           text,
+    reviewed_at              timestamp with time zone,
+    created_at               timestamp with time zone default now()               not null
+);
+
+alter table mrps
+    owner to sase;
+
+create index idx_mrps_status
+    on mrps (status);
+
+create table audit_log
+(
+    id             bigserial
+        primary key,
+    actor_type     text                                          not null,
+    actor_id       text                                          not null,
+    model_version  text,
+    action         text                                          not null,
+    artifact_type  text,
+    artifact_id    text,
+    context        jsonb,
+    tools_used     text[]                   default '{}'::text[] not null,
+    result         text,
+    human_decision text,
+    timestamp      timestamp with time zone default now()        not null
+);
+
+alter table audit_log
+    owner to sase;
+
+create index idx_audit_log_artifact
+    on audit_log (artifact_type, artifact_id);
+
+create trigger audit_log_no_update
+    before update
+    on audit_log
+    for each row
+execute procedure audit_log_no_rewrite();
+
+create trigger audit_log_no_delete
+    before delete
+    on audit_log
+    for each row
+execute procedure audit_log_no_rewrite();
+
+

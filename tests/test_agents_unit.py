@@ -61,3 +61,32 @@ def test_allowlist_matching_is_method_exact():
     # GET /projects allowed; DELETE same path not:
     with pytest.raises(PolicyViolation):
         client.request("DELETE", "/projects/x")
+
+
+# --- SpecAgent._enforce_ac_refs: LLM output never gets to break
+# --- traceability by fabricating AC ids -------------------------------
+
+from agents.spec_agent import _enforce_ac_refs
+
+
+def test_enforce_ac_refs_replaces_fabricated_ids():
+    body = ("artifact: x\nstory: US-1\nbehavior:\n  add:\n"
+            "    - does the thing\nacceptance_criteria_refs:\n"
+            "  - AC-X-01\n  - AC-X-02\nopen_questions:\n  - q1\n")
+    out = _enforce_ac_refs(body, ["AC-TODO-007-01"])
+    assert "- AC-TODO-007-01" in out
+    assert "AC-X-01" not in out and "AC-X-02" not in out
+
+
+def test_enforce_ac_refs_appends_when_block_missing():
+    body = "artifact: x\nstory: US-1\nbehavior:\n  add:\n    - works\n"
+    out = _enforce_ac_refs(body, ["AC-Y-01"])
+    assert out.count("acceptance_criteria_refs:") == 1
+    assert "- AC-Y-01" in out
+
+
+def test_enforce_ac_refs_keeps_multiple_real_ids_in_order():
+    body = "acceptance_criteria_refs:\n  - AC-FAB-9\nbehavior: x\n"
+    out = _enforce_ac_refs(body, ["AC-B-01", "AC-A-02"])
+    lines = [l.strip() for l in out.splitlines() if l.strip().startswith("- ")]
+    assert lines == ["- AC-B-01", "- AC-A-02"]

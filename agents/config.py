@@ -58,8 +58,11 @@ ROLES: dict[str, RolePolicy] = {
         name="Coding Agent",
         identity="agent:coder",
         model="qwen2.5-coder:7b",
+        # POST /mrps: the coder opens the Merge Request package for the
+        # code it produced (§3.7.8 requires every generated change to be
+        # traceable to an agent run; the MRP is how it enters review).
         allow=_allow("GET /specs*", "POST /agent-runs", "PATCH /agent-runs*",
-                     "POST /crps"),
+                     "POST /crps", "POST /mrps"),
     ),
     "reviewer": RolePolicy(
         name="Reviewer Agent",
