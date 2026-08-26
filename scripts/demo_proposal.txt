@@ -1,0 +1,111 @@
+=== FILE: task_manager.py ===
+"""Internal Task Manager - governed demo application.
+
+Generated as a PROPOSAL by the coder agent (SoD strict mode).
+Verification (tests/scan/lint) is owned by the orchestrator.
+"""
+import json
+from dataclasses import dataclass, field, asdict
+
+
+@dataclass
+class Task:
+    id: int
+    title: str
+    done: bool = False
+
+
+class TaskManager:
+    """In-memory task store: create / update / list / complete."""
+
+    def __init__(self):
+        self._tasks = {}
+        self._next_id = 1
+
+    def create(self, title: str) -> int:
+        if not title or not title.strip():
+            raise ValueError("title must be a non-empty string")
+        task = Task(id=self._next_id, title=title.strip())
+        self._tasks[task.id] = task
+        self._next_id += 1
+        return task.id
+
+    def update(self, task_id: int, title: str) -> None:
+        if task_id not in self._tasks:
+            raise KeyError(f"unknown task id {task_id}")
+        if not title or not title.strip():
+            raise ValueError("title must be a non-empty string")
+        self._tasks[task_id].title = title.strip()
+
+    def complete(self, task_id: int) -> None:
+        if task_id not in self._tasks:
+            raise KeyError(f"unknown task id {task_id}")
+        self._tasks[task_id].done = True
+
+    def list_tasks(self, include_done: bool = True) -> list:
+        tasks = [asdict(t) for t in self._tasks.values()]
+        if not include_done:
+            tasks = [t for t in tasks if not t["done"]]
+        return tasks
+
+    def to_json(self) -> str:
+        return json.dumps(self.list_tasks())
+
+
+if __name__ == "__main__":
+    tm = TaskManager()
+    tid = tm.create("first task")
+    print(tm.to_json())
+    tm.complete(tid)
+    print(tm.to_json())
+=== END FILE ===
+
+=== FILE: test_task_manager.py ===
+"""Tests for the Internal Task Manager demo app."""
+from task_manager import TaskManager
+
+
+def test_create_task_returns_incrementing_ids():
+    tm = TaskManager()
+    assert tm.create("a") == 1
+    assert tm.create("b") == 2
+    assert len(tm.list_tasks()) == 2
+
+
+def test_create_rejects_empty_title():
+    import pytest
+    tm = TaskManager()
+    with pytest.raises(ValueError):
+        tm.create("")
+
+
+def test_update_changes_title():
+    tm = TaskManager()
+    tid = tm.create("old")
+    tm.update(tid, "new")
+    assert tm.list_tasks()[0]["title"] == "new"
+
+
+def test_update_unknown_id_raises():
+    import pytest
+    tm = TaskManager()
+    with pytest.raises(KeyError):
+        tm.update(99, "x")
+
+
+def test_complete_marks_done_and_filters():
+    tm = TaskManager()
+    a = tm.create("a")
+    tm.create("b")
+    tm.complete(a)
+    remaining = tm.list_tasks(include_done=False)
+    assert [t["id"] for t in remaining] == [2]
+    assert tm.list_tasks()[0]["done"] is True
+
+
+def test_complete_unknown_id_raises():
+    import pytest
+    tm = TaskManager()
+    with pytest.raises(KeyError):
+        tm.complete(42)
+=== END FILE ===

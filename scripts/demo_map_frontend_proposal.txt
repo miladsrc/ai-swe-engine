@@ -1,0 +1,212 @@
+=== FILE: package.json ===
+{
+  "name": "demo-map-frontend",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "ng build",
+    "start": "ng serve --proxy-config proxy.conf.json"
+  },
+  "dependencies": {
+    "@angular/common": "^17.3.0",
+    "@angular/compiler": "^17.3.0",
+    "@angular/core": "^17.3.0",
+    "@angular/platform-browser": "^17.3.0",
+    "@angular/platform-browser-dynamic": "^17.3.0",
+    "@angular/forms": "^17.3.0",
+    "rxjs": "~7.8.0",
+    "zone.js": "~0.14.3"
+  },
+  "devDependencies": {
+    "@angular-devkit/build-angular": "^17.3.0",
+    "@angular/cli": "^17.3.0",
+    "typescript": "~5.4.2"
+  }
+}
+=== END FILE ===
+
+=== FILE: angular.json ===
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "projects": {
+    "map-frontend": {
+      "projectType": "application",
+      "root": "",
+      "sourceRoot": "src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular-devkit/build-angular:application",
+          "options": {
+            "outputPath": "dist/map-frontend",
+            "index": "src/index.html",
+            "browser": "src/main.ts",
+            "polyfills": ["zone.js"],
+            "tsConfig": "tsconfig.app.json",
+            "styles": ["src/styles.css"]
+          },
+          "configurations": {
+            "production": { "outputHashing": "all" }
+          },
+          "defaultConfiguration": "production"
+        }
+      }
+    }
+  }
+}
+=== END FILE ===
+
+=== FILE: tsconfig.json ===
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "outDir": "./dist/out-tsc",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": [],
+    "noImplicitOverride": true,
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "module": "ES2022",
+    "lib": ["ES2023", "dom", "dom.iterable"]
+  },
+  "angularCompilerOptions": {
+    "enableI18nLegacyMessageIdFormat": false,
+    "strictInjectionParameters": true
+  }
+}
+=== END FILE ===
+
+=== FILE: tsconfig.app.json ===
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/app"
+  },
+  "files": ["src/main.ts"],
+  "include": ["src/**/*.d.ts"]
+}
+=== END FILE ===
+
+=== FILE: proxy.conf.json ===
+{
+  "/api": {
+    "target": "http://localhost:8080",
+    "secure": false
+  }
+}
+=== END FILE ===
+
+=== FILE: src/index.html ===
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Location Map Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+  <app-location-list></app-location-list>
+</body>
+</html>
+=== END FILE ===
+
+=== FILE: src/main.ts ===
+import { bootstrapApplication } from '@angular/platform-browser';
+import { provideHttpClient } from '@angular/common/http';
+import { LocationListComponent } from './app/location.component';
+
+bootstrapApplication(LocationListComponent, {
+  providers: [provideHttpClient()]
+}).catch(err => console.error(err));
+=== END FILE ===
+
+=== FILE: src/styles.css ===
+body { font-family: system-ui, sans-serif; margin: 2rem; background: #f8fafc; }
+table { border-collapse: collapse; width: 100%; background: #fff; }
+th, td { border: 1px solid #e2e8f0; padding: 6px 10px; text-align: left; }
+th { background: #141419; color: #d4af37; }
+button { cursor: pointer; padding: 6px 12px; background: #2563eb; color: #fff; border: none; border-radius: 6px; }
+input, textarea { padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px; width: 100%; }
+form div { margin-bottom: 8px; }
+=== END FILE ===
+
+=== FILE: src/app/location.component.ts ===
+import { Component, OnInit } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { HttpClient } from '@angular/common/http';
+
+interface LocationDto {
+  id?: number;
+  name: string;
+  description?: string;
+  lat?: number;
+  lng?: number;
+}
+
+@Component({
+  selector: 'app-location-list',
+  standalone: true,
+  imports: [CommonModule, FormsModule],
+  template: `
+    <h1>Locations</h1>
+    <form (ngSubmit)="add()">
+      <div><input placeholder="Name" [(ngModel)]="name" name="name" required></div>
+      <div><textarea placeholder="Description" [(ngModel)]="description"
+             name="description"></textarea></div>
+      <div><input placeholder="lat (optional)" [(ngModel)]="lat" name="lat">
+           <input placeholder="lng (optional)" [(ngModel)]="lng" name="lng"></div>
+      <button type="submit">Add location</button>
+    </form>
+    <p *ngIf="message">{{ message }}</p>
+    <table>
+      <thead><tr><th>#</th><th>Name</th><th>Description</th><th>Lat</th><th>Lng</th></tr></thead>
+      <tbody>
+        <tr *ngFor="let l of locations">
+          <td>{{ l.id }}</td><td>{{ l.name }}</td><td>{{ l.description }}</td>
+          <td>{{ l.lat }}</td><td>{{ l.lng }}</td>
+        </tr>
+      </tbody>
+    </table>
+  `
+})
+export class LocationListComponent implements OnInit {
+  locations: LocationDto[] = [];
+  name = '';
+  description = '';
+  lat = '';
+  lng = '';
+  message = '';
+
+  constructor(private http: HttpClient) {}
+
+  ngOnInit(): void {
+    this.load();
+  }
+
+  load(): void {
+    this.http.get<LocationDto[]>('/api/locations')
+      .subscribe(data => this.locations = data);
+  }
+
+  add(): void {
+    const payload: LocationDto = {
+      name: this.name,
+      description: this.description
+    };
+    if (this.lat) payload.lat = Number(this.lat);
+    if (this.lng) payload.lng = Number(this.lng);
+    this.http.post<LocationDto>('/api/locations', payload)
+      .subscribe({
+        next: () => {
+          this.message = 'Created.';
+          this.name = ''; this.description = ''; this.lat = ''; this.lng = '';
+          this.load();
+        },
+        error: () => this.message = 'Create failed.'
+      });
+  }
+}
+=== END FILE ===
