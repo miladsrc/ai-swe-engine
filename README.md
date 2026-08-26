@@ -154,21 +154,33 @@ python -m agents.orchestrator --online --spec-only --name core-v2
 ```
 
 ### 4. Human gates (you must run these)
+
+**Preferred — token flow (required once `SASE_REQUIRE_HUMAN_TOKEN=1`):**
 ```bash
-# Validate a spec (Gate 1)
+# Login once; the token is shown exactly once
+curl -X POST localhost:8000/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"<you>","password":"..."}'
+
+# Validate a spec (Gate 1) — token identity is authoritative
 curl -X POST localhost:8000/specs/<spec-id>/validate \
-  -H 'X-Acting-As: human:<your-name>' -d '{}'
+  -H 'Authorization: Bearer <token>' -d '{}'
 
 # Resolve a CRP via VCR
 curl -X POST localhost:8000/vcrs \
-  -H 'X-Acting-As: human:<your-name>' \
+  -H 'Authorization: Bearer <token>' \
   -H 'Content-Type: application/json' \
   -d '{"related_artifact_type":"CRP","related_artifact_id":"<crp-id>",...}'
 
 # Approve a merge
 curl -X POST localhost:8000/mrps/<mrp-id>/human-decision \
-  -H 'X-Acting-As: human:<your-name>' \
+  -H 'Authorization: Bearer <token>' \
   -d '{"decision":"approved"}'
+```
+
+**Legacy header flow** (still works while `SASE_REQUIRE_HUMAN_TOKEN` is unset):
+```bash
+curl -X POST localhost:8000/specs/<spec-id>/validate \
+  -H 'X-Acting-As: human:<your-name>' -d '{}'
 ```
 
 ## Proving the chain works — a manual walkthrough
@@ -208,10 +220,10 @@ curl -X POST localhost:8000/agent-runs \
        "model_name":"qwen2.5-coder:7b","model_short":"QW","spec_id":"SPEC-TODO-CORE"}'
 # -> HTTP 409, gate blocks premature code-gen
 
-# 7. Validate the spec (human-only)
+# 7. Validate the spec (human-only; token flow shown — see §4 above)
 curl -X POST localhost:8000/specs/SPEC-TODO-CORE/validate \
   -H 'Content-Type: application/json' \
-  -H 'X-Acting-As: human:m.barani' -d '{}'
+  -H 'Authorization: Bearer <token-from-/auth/login>' -d '{}'
 
 # 8. Now code-gen succeeds
 curl -X POST localhost:8000/agent-runs \
@@ -241,7 +253,7 @@ curl -X PATCH localhost:8000/mrps/MRP-PR-1/evidence \
 # 11. Approve merge (human-only)
 curl -X POST localhost:8000/mrps/MRP-PR-1/human-decision \
   -H 'Content-Type: application/json' \
-  -H 'X-Acting-As: human:m.barani' \
+  -H 'Authorization: Bearer <token-from-/auth/login>' \
   -d '{"decision":"approved"}'
 
 # 12. Verify full traceability

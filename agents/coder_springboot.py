@@ -11,7 +11,7 @@ from pathlib import Path
 from agents.coder_agent import (CoderAgent, record_ci_evidence, parse_file_blocks,
                                 security_scan, prompt_provenance)
 from agents.config import ROLES
-from agents.engine_client import EngineClient
+from agents.engine_client import EngineClient, human_curl_auth, print_human_auth_hint
 from agents.llm import pick_backend
 
 
@@ -311,6 +311,9 @@ if __name__ == "__main__":
     print(f"[ci] evidence recorded on {result.mrp_id}")
     
     print("\n=== HUMAN GATES ===")
+    print_human_auth_hint(base_url)
     if result.crp_id:
-        print(f"1. Resolve CRP: curl -X POST {base_url}/vcrs -H 'X-Acting-As: human:m.barani' ...")
-    print(f"2. Approve merge: curl -X POST {base_url}/mrps/{result.mrp_id}/human-decision -H 'X-Acting-As: human:m.barani' ...")
+        print(f"1. Resolve CRP: curl -X POST {base_url}/vcrs "
+              f"{human_curl_auth()} ...")
+    print(f"2. Approve merge: curl -X POST {base_url}/mrps/{result.mrp_id}/"
+          f"human-decision {human_curl_auth()} ...")

@@ -10,12 +10,36 @@ Run with:  pytest tests/test_traceability_chain.py
 """
 
 import httpx
+import os
 import pytest
 import uuid
 
 BASE = "http://localhost:8000"
+# LEGACY identity header — kept ONLY as a fallback for environments without
+# live credentials. Dies automatically once SASE_REQUIRE_HUMAN_TOKEN=1.
 HUMAN = {"X-Acting-As": "human:pytest"}
 CI = {"X-Acting-As": "ci:pipeline", "X-CI-Token": "dev-ci-token-change-me"}
+
+
+def _human_auth(client) -> tuple[dict, str, bool]:
+    """
+    Token-first human authentication for gate calls (Phase 2 migration).
+
+    Returns (headers, actor_id, used_token). When SASE_LIVE_USERNAME /
+    SASE_LIVE_PASSWORD are set, logs in and returns an AUTHORITATIVE
+    bearer token. Otherwise falls back to the legacy X-Acting-As header
+    so the suite still runs credential-less until the flag flips.
+    """
+    username = os.environ.get("SASE_LIVE_USERNAME")
+    password = os.environ.get("SASE_LIVE_PASSWORD")
+    if username and password:
+        r = client.post("/auth/login", json={"username": username,
+                                             "password": password})
+        assert r.status_code == 200, (
+            f"login failed ({r.status_code}) — check SASE_LIVE_* credentials")
+        return ({"Authorization": f"Bearer {r.json()['token']}"},
+                f"human:{username}", True)
+    return dict(HUMAN), "human:pytest", False
 
 
 def _api_reachable() -> bool:
@@ -84,8 +108,12 @@ def test_full_chain_and_gates(client):
     })
     assert r.status_code == 409, "Spec-must-be-validated gate did not block an unvalidated Spec (§3.5)"
 
-    # 6. validate, then retry — must succeed
-    r = client.post(f"/specs/{spec_id}/validate", json={"validated_by": None}, headers=HUMAN)
+    # 6. validate, then retry — must succeed (token-first, legacy fallback)
+    human_headers, human_actor, used_token = _human_auth(client)
+    print(f"[chain] human auth mode: "
+          f"{'bearer token' if used_token else 'legacy header'}")
+    r = client.post(f"/specs/{spec_id}/validate", json={"validated_by": None},
+                    headers=human_headers)
     assert r.status_code == 200
 
     # 6b. GATE CHECK: the same call without a human X-Acting-As header is rejected
@@ -138,22 +166,113 @@ def test_full_chain_and_gates(client):
     assert r.status_code == 200
     r = client.post(f"/mrps/{mrp_id}/human-decision", json={
         "decision": "approved"
-    }, headers=HUMAN)
+    }, headers=human_headers)
     assert r.status_code == 409, "Merge gate did not block on an open High-severity CRP (§3.6.3)"
 
     # 10. resolve the CRP via VCR, then approval must succeed
     r = client.post("/vcrs", json={
         "related_artifact_type": "CRP", "related_artifact_id": crp_id,
         "decision_status": "approved_with_changes", "rationale": "test resolution",
-    }, headers=HUMAN)
+    }, headers=human_headers)
     assert r.status_code == 200
 
     r = client.post(f"/mrps/{mrp_id}/human-decision", json={
         "decision": "approved"
-    }, headers=HUMAN)
+    }, headers=human_headers)
     assert r.status_code == 200, "Merge should succeed once the blocking CRP is resolved"
+
+    # 10b. In token mode, prove the recorded identity is the AUTHORITATIVE
+    # token identity (never a spoofable header value).
+    if used_token:
+        r = client.get(f"/traceability/audit/MRP/{mrp_id}",
+                       headers={"X-Acting-As": "human:pytest"})
+        assert r.status_code == 200
+        decisions = [e for e in r.json()
+                     if e["action"] == "mrp_human_decision"]
+        assert decisions, "no human decision found in audit trail"
+        assert all(e["actor_id"] == human_actor for e in decisions), (
+            f"expected only {human_actor}, got "
+            f"{[e['actor_id'] for e in decisions]}")
 
     # 11. full chain must be reconstructable
     r = client.get(f"/traceability/chain/{mrp_id}")
     assert r.status_code == 200
     assert r.json()["fully_traceable"] is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: token-flow verification (M6). Env-gated because it needs real
+# credentials on the live stack. Run e.g.:
+#   SASE_LIVE_USERNAME=m.barani SASE_LIVE_PASSWORD=... pytest \
+#       tests/test_traceability_chain.py::test_human_gates_accept_bearer_token
+# ---------------------------------------------------------------------------
+
+def test_human_gates_accept_bearer_token(client):
+    """Proves the THREE conditions required before strict mode:
+    (1) a valid token authenticates every human gate,
+    (2) an invalid/expired token is rejected 401,
+    (3) a spoofed X-Acting-As can NEVER override token identity
+        (audit trail records the authoritative identity)."""
+    username = os.environ.get("SASE_LIVE_USERNAME")
+    password = os.environ.get("SASE_LIVE_PASSWORD")
+    if not (username and password):
+        pytest.skip("set SASE_LIVE_USERNAME/SASE_LIVE_PASSWORD to run the "
+                    "token-flow gate check against the live stack")
+
+    # --- login ---
+    r = client.post("/auth/login", json={"username": username,
+                                         "password": password})
+    assert r.status_code == 200, "login failed — check credentials"
+    token = r.json()["token"]
+    auth = {"Authorization": f"Bearer {token}"}
+
+    # --- /auth/me resolves the token to the authoritative identity ---
+    r = client.get("/auth/me", headers=auth)
+    assert r.status_code == 200
+    assert r.json()["actor_id"] == f"human:{username}"
+
+    # --- build a minimal spec chain ---
+    suffix = uuid.uuid4().hex[:6].upper()
+    r = client.post("/prds", json={
+        "project_id": "test-project", "domain": f"TOK{suffix}",
+        "title": "Token flow", "body_ref": "n/a",
+        "created_by": f"human:{username}"})
+    assert r.status_code == 200
+    prd_id = r.json()["id"]
+    r = client.post("/user-stories", json={
+        "prd_id": prd_id, "domain": f"TOK{suffix}", "body_ref": "n/a"})
+    us_id = r.json()["id"]
+    client.post("/acceptance-criteria",
+                json={"user_story_id": us_id, "body_ref": "n/a"})
+    r = client.post("/specs", json={
+        "project_id": "test-project", "user_story_id": us_id,
+        "domain": "TOK", "name": f"token-flow-{suffix}", "body_ref": "n/a"})
+    spec_id = r.json()["id"]
+
+    # (1) VALID TOKEN + spoofed header riding along: gate passes AND the
+    # spoof loses — audit records the token identity.
+    r = client.post(f"/specs/{spec_id}/validate", json={},
+                    headers={**auth, "X-Acting-As": "human:someone.else"})
+    assert r.status_code == 200, "human gate rejected a valid bearer token"
+
+    r = client.get(f"/traceability/audit/Spec/{spec_id}",
+                   headers={"X-Acting-As": "human:pytest"})
+    entries = [e for e in r.json() if e["action"] == "validate_spec"]
+    assert entries and entries[-1]["actor_id"] == f"human:{username}", (
+        "spoofed X-Acting-As must not override token identity in audit")
+    assert all(e["actor_id"] != "human:someone.else" for e in entries)
+
+    # (2) INVALID token on another fresh spec: rejected 401.
+    r = client.post("/specs", json={
+        "project_id": "test-project", "user_story_id": us_id,
+        "domain": "TOK", "name": f"token-flow-bad-{suffix}", "body_ref": "n/a"})
+    bad_spec_id = r.json()["id"]
+    r = client.post(f"/specs/{bad_spec_id}/validate", json={},
+                    headers={"Authorization": f"Bearer {'f' * 64}",
+                             "X-Acting-As": "human:someone.else"})
+    assert r.status_code == 401, "invalid bearer token must not pass gates"
+
+    # (2b) malformed/garbage Authorization header: also 401.
+    r = client.post(f"/specs/{bad_spec_id}/validate", json={},
+                    headers={"Authorization": "Basic dXNlcjpwYXNz"})
+    assert r.status_code == 401

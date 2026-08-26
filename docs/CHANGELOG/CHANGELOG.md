@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-08-26 (token migration COMPLETE — strict-mode ready)
+
+### Changed
+- tests/test_traceability_chain.py: token-first `_human_auth` helper —
+  real login when SASE_LIVE_USERNAME/SASE_LIVE_PASSWORD set, legacy
+  header only as credential-less fallback. Main chain + VCR/MRP human
+  decisions now run under bearer tokens when credentials exist.
+- Gate proof trio live test: valid token passes / invalid token 401 /
+  spoofed X-Acting-As loses (audit-verified authoritative identity).
+
+### Verification
+- 101 unit tests green; live E2E green in BOTH modes (token w/ creds,
+  legacy fallback without); flag still OFF.
+
+---
+
+## 2026-08-26 (token-flow migration review — pre-enablement)
+
+### Changed (additive only; flag still OFF)
+- agents/engine_client.py: `human_curl_auth()` + `print_human_auth_hint()` helpers; EngineClient optional `bearer_token=` / `SASE_HUMAN_TOKEN` env
+- agents/orchestrator.py, agents/coder_springboot.py: printed human-gate instructions show token flow (legacy kept)
+- tests/test_traceability_chain.py: env-gated `test_human_gates_accept_bearer_token` proves all gates work bearer-only
+- README/FULL_DOCUMENTATION: token flow documented as preferred
+
+### Migration finding
+- Agent roles need NO migration: they never call human gates. Migration surface is human-facing instructions/docs/tooling only.
+
+---
+
 ## 2026-08-26 (Phase 2 start: human identity)
 
 ### Added
