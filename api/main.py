@@ -1,8 +1,9 @@
+import hmac
 import os
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from api.routers import projects, requirements, agent_runs, crp, mrp, vcr, traceability, evidence
+from api.routers import projects, requirements, agent_runs, crp, mrp, vcr, traceability, evidence, blueprints
 
 app = FastAPI(
     title="SASE Traceability Backbone",
@@ -25,6 +26,7 @@ app.include_router(mrp.router)
 app.include_router(vcr.router)
 app.include_router(traceability.router)
 app.include_router(evidence.router)
+app.include_router(blueprints.router)
 
 
 @app.middleware("http")
@@ -38,12 +40,40 @@ async def require_perimeter_token(request: Request, call_next):
     expected = os.environ.get("SASE_API_TOKEN", "")
     if expected:
         provided = request.headers.get("X-API-Token")
-        if not provided or provided != expected:
+        # P3: constant-time comparison — no timing side channel.
+        if not provided or not hmac.compare_digest(
+                provided.encode(), expected.encode()):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Missing or invalid X-API-Token header."},
             )
     return await call_next(request)
+
+
+@app.on_event("startup")
+def reap_orphan_runs_on_startup() -> None:
+    """
+    P4: an agent process that dies mid-run leaves a 'running' row with no
+    terminal patch (the in-process except-handler only covers caught
+    exceptions). On every API startup, runs still marked 'running' after
+    the configured age are flipped to 'failed' by the system actor
+    'orphan-reaper', with an audit entry — reusing the exact transition
+    and audit patterns of PATCH /agent-runs/{id}. Failures are logged,
+    never fatal (the API must boot even if this sweep can't run).
+    """
+    from api.database import SessionLocal
+    from api.routers.agent_runs import reap_orphan_runs
+
+    try:
+        db = SessionLocal()
+        try:
+            reaped = reap_orphan_runs(db)
+        finally:
+            db.close()
+        if reaped:
+            print(f"[startup] orphan-run reaper: marked failed: {reaped}")
+    except Exception as e:  # pragma: no cover - depends on live DB state
+        print(f"[startup] orphan-run reaper skipped: {e}")
 
 
 @app.get("/health")

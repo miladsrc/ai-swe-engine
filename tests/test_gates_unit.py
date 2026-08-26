@@ -192,11 +192,17 @@ def test_non_machine_actor_cannot_pass_ci_gate(forged):
     assert exc.value.status_code == 403, f"{forged!r} must not pass"
 
 
-def test_ci_actor_passes_without_token_configured(monkeypatch):
-    # Local dev: SASE_CI_TOKEN unset -> header identity alone is enough.
+def test_ci_actor_fail_closed_when_token_unconfigured(monkeypatch):
+    # P3: an unconfigured deployment must NOT accept machine evidence
+    # silently — evidence endpoints lock with 503 until SASE_CI_TOKEN is
+    # set (docker-compose provides a dev value; prod uses secret manager).
     monkeypatch.delenv("SASE_CI_TOKEN", raising=False)
-    assert require_ci_actor(x_acting_as="ci:pipeline", x_ci_token=None) == "ci:pipeline"
-    assert require_ci_actor(x_acting_as="system:scanner", x_ci_token="whatever") == "system:scanner"
+    with pytest.raises(HTTPException) as exc:
+        require_ci_actor(x_acting_as="ci:pipeline", x_ci_token=None)
+    assert exc.value.status_code == 503
+    with pytest.raises(HTTPException) as exc:
+        require_ci_actor(x_acting_as="ci:pipeline", x_ci_token="anything")
+    assert exc.value.status_code == 503
 
 
 def test_ci_actor_with_matching_token_passes(monkeypatch):

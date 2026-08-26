@@ -80,14 +80,21 @@ def update_evidence(
         VALID_PROVENANCES = {"human", "tool", "llm"}
         if provenance not in VALID_PROVENANCES:
             raise HTTPException(422, f"provenance must be one of {VALID_PROVENANCES}")
-    
+
+    # P7: execution_context is audit-only — pop it before the setattr
+    # loop (MRP has no such column) and persist it verbatim in the audit
+    # entry context so full test output / scan findings survive.
+    execution_context = evidence_data.pop("execution_context", None)
+
     for field, value in evidence_data.items():
         setattr(mrp, field, value)
-    
+
     # Phase 1: Include provenance in audit context for traceability
     audit_context = evidence_data.copy()
     if provenance:
         audit_context["provenance"] = provenance
+    if execution_context is not None:
+        audit_context["execution_context"] = execution_context
     
     record_audit(db,
                  actor_type="ci" if ci_actor.startswith("ci:") else "system",

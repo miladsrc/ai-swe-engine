@@ -1,4 +1,8 @@
+from datetime import datetime, timedelta, timezone
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from api.database import get_db
 from api import models, schemas, ids
@@ -6,6 +10,61 @@ from api.audit import record_audit
 from api.gates import spec_must_be_human_validated_before_code_gen, assert_run_patchable
 
 router = APIRouter(prefix="/agent-runs", tags=["agent-runs"])
+
+# P4: runs older than this many hours and still 'running' are considered
+# orphaned by the startup reaper (SASE_ORPHAN_RUN_HOURS overrides).
+ORPHAN_RUN_MAX_AGE_HOURS = 24.0
+
+
+def _orphan_cutoff(now: datetime,
+                   max_age_hours: float | None = None) -> datetime:
+    """Pure helper (unit-tested): start of the orphan window."""
+    hours = (float(os.environ.get("SASE_ORPHAN_RUN_HOURS", ORPHAN_RUN_MAX_AGE_HOURS))
+             if max_age_hours is None else max_age_hours)
+    return now - timedelta(hours=hours)
+
+
+def reap_orphan_runs(db: Session, *, now: datetime | None = None,
+                     max_age_hours: float | None = None) -> list[str]:
+    """
+    Mark abandoned 'running' AgentRuns as 'failed'. Uses the SAME
+    transition rules as PATCH /agent-runs/{id} (terminal status +
+    finished_at stamp) and the same audit mechanism — no new lifecycle
+    concept is introduced. Returns the reaped run ids.
+
+    `now`/`max_age_hours` parameters exist for deterministic tests;
+    production callers use the defaults (wall clock + env/config age).
+    """
+    current = now or datetime.now(timezone.utc)
+    cutoff = _orphan_cutoff(current, max_age_hours)
+    stmt = select(models.AgentRun).where(
+        models.AgentRun.status == "running",
+        models.AgentRun.started_at < cutoff,
+    )
+    runs = db.execute(stmt).scalars().all()
+    reaped: list[str] = []
+    for run in runs:
+        run.status = "failed"
+        run.finished_at = func.now()
+        record_audit(
+            db, actor_type="system", actor_id="orphan-reaper",
+            action="reap_orphan_run", artifact_type="AgentRun",
+            artifact_id=run.id, result="failed",
+            context={
+                "started_at": run.started_at.isoformat()
+                if run.started_at else None,
+                "cutoff": cutoff.isoformat(),
+                "max_age_hours": max_age_hours
+                if max_age_hours is not None
+                else float(os.environ.get("SASE_ORPHAN_RUN_HOURS",
+                                          ORPHAN_RUN_MAX_AGE_HOURS)),
+                "reason": "orphaned: process died before terminal patch",
+            },
+        )
+        reaped.append(run.id)
+    if reaped:
+        db.commit()
+    return reaped
 
 
 @router.post("")
@@ -33,8 +92,10 @@ def start_agent_run(payload: schemas.AgentRunCreate, db: Session = Depends(get_d
         spec_id=payload.spec_id,
         blueprint_ids=payload.blueprint_ids,
         model_name=payload.model_name,
+        model_version=payload.model_version,
         prompt_id=payload.prompt_id,
         prompt_version=payload.prompt_version,
+        system_prompt_hash=payload.system_prompt_hash,
         rag_retrieval_enabled=payload.rag_retrieval_enabled,
         rag_retrieved_doc_ids=payload.rag_retrieved_doc_ids,
         status="running",

@@ -26,6 +26,7 @@ must not be anonymous (the audit trail) while still accepting any
 well-formed actor kind.
 """
 
+import hmac
 import os
 
 from fastapi import Header, HTTPException
@@ -65,12 +66,14 @@ def require_ci_actor(
     """
     FastAPI dependency for machine-written evidence (e.g. PATCH
     /mrps/{id}/evidence). Requires X-Acting-As starting with 'ci:' or
-    'system:' and, when the SASE_CI_TOKEN env var is set, a matching
-    X-CI-Token header. Returns the verified actor id.
+    'system:' and a matching X-CI-Token header backed by SASE_CI_TOKEN.
+    Returns the verified actor id.
 
-    SASE_CI_TOKEN is unset in local dev (docker-compose sets a documented
-    placeholder); in production it should come from a secret manager, or be
-    replaced entirely by mTLS between CI and this service.
+    P3 fail-closed rule: if SASE_CI_TOKEN is NOT configured, evidence
+    writes are refused (503) — never silently allowed. There is no
+    hardcoded fallback token. docker-compose sets a documented dev
+    placeholder; production should inject it from a secret manager, or
+    replace it entirely with mTLS between CI and this service.
     """
     if not x_acting_as:
         raise HTTPException(
@@ -88,15 +91,24 @@ def require_ci_actor(
         )
 
     expected_token = os.environ.get("SASE_CI_TOKEN", "")
-    if expected_token:
-        if not x_ci_token:
-            raise HTTPException(
-                401,
-                "Missing X-CI-Token header. This deployment requires the shared "
-                "CI token to record evidence.",
-            )
-        if x_ci_token != expected_token:
-            raise HTTPException(403, "X-CI-Token does not match the configured CI token.")
+    if not expected_token:
+        # Fail closed (P3): an unconfigured deployment must not accept
+        # machine evidence silently — that would let anyone forge
+        # gate-passing test/security results.
+        raise HTTPException(
+            503,
+            "Evidence endpoints are locked: SASE_CI_TOKEN is not configured "
+            "on this deployment. Set it (e.g. from a secret manager) to "
+            "allow CI evidence recording.",
+        )
+    if not x_ci_token:
+        raise HTTPException(
+            401,
+            "Missing X-CI-Token header. This deployment requires the shared "
+            "CI token to record evidence.",
+        )
+    if not hmac.compare_digest(x_ci_token.strip(), expected_token):
+        raise HTTPException(403, "X-CI-Token does not match the configured CI token.")
     return actor
 
 

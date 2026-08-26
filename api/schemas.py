@@ -73,12 +73,18 @@ class AgentRunCreate(BaseModel):
     task_type: str
     model_name: str
     model_short: str = Field(..., description="short code for the ID, e.g. 'DS' or 'QW'")
+    # P2: provenance fields backed by EXISTING agent_runs columns — they
+    # were dead weight until agents started sending them.
+    model_version: Optional[str] = Field(
+        None, description="Model version tag (e.g. SASE_MODEL_VERSION env)")
+    prompt_id: Optional[str] = None
+    prompt_version: Optional[str] = None
+    system_prompt_hash: Optional[str] = Field(
+        None, description="Short sha256 of the system prompt actually used")
     prd_id: Optional[str] = None
     user_story_id: Optional[str] = None
     spec_id: Optional[str] = None
     blueprint_ids: List[str] = []
-    prompt_id: Optional[str] = None
-    prompt_version: Optional[str] = None
     rag_retrieval_enabled: bool = False
     rag_retrieved_doc_ids: List[str] = []
 
@@ -160,10 +166,39 @@ class MRPEvidenceUpdate(BaseModel):
     # Phase 1: Provenance tagging - tracks who/what produced this evidence
     # Must be one of: "human", "tool", "llm"
     provenance: Optional[str] = Field(None, description="Source of evidence: human | tool | llm")
+    # P7: raw execution evidence (full test output, scan findings, lint
+    # output, run metadata). Stored in the audit entry context — NOT as
+    # MRP columns — so the evidence JSONB carries what actually happened,
+    # not just pass/fail badges.
+    execution_context: Optional[Dict[str, Any]] = Field(
+        None, description="Raw execution evidence persisted into the audit context")
 
 
 class MRPHumanDecision(BaseModel):
     decision: str  # 'approved' | 'rejected' | 'needs_revision'
+    rationale: Optional[str] = None
     # Identity is taken from the X-Acting-As header (api/security.py);
     # this field is accepted for backwards compatibility but ignored.
     human_reviewer: Optional[str] = None
+
+
+class BlueprintCreate(BaseModel):
+    id: str = Field(..., description="BP-<LAYER>-<seq>, e.g. BP-ANGULAR-FRONTEND-001")
+    version: str = Field(..., description="e.g. 'v1.0'")
+    scope: str = Field(..., description="'org' | 'project:<id>' | 'stack:<stack>'")
+    body_ref: str = Field(..., description="Blueprint content (markdown/yaml)")
+    approved_by: str = Field(..., description="Who approved: 'human:<name>' or 'agent:<role>'")
+    change_note: Optional[str] = None
+
+
+class BlueprintOut(BaseModel):
+    id: str
+    version: str
+    scope: str
+    body_ref: str
+    approved_by: str
+    change_note: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
