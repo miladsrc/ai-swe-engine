@@ -84,4 +84,14 @@ ROLES: dict[str, RolePolicy] = {
         model=None,
         allow=_allow("PATCH /mrps*"),  # evidence only, via X-CI-Token
     ),
+    "designer": RolePolicy(
+        name="Designer Agent",
+        identity="agent:designer",
+        model="qwen2.5-coder:7b",
+        # Designer generates DESIGN.md and frontend code, references
+        # blueprints and specs, records agent runs.
+        allow=_allow("GET /specs*", "GET /blueprints*",
+                     "POST /agent-runs", "PATCH /agent-runs*",
+                     "POST /mrps"),
+    ),
 }

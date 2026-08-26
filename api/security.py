@@ -174,3 +174,46 @@ def require_any_actor(
             f"start with one of: {', '.join(ANY_PREFIXES)}.",
         )
     return actor
+
+
+def require_authenticated_actor(
+    x_acting_as: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> str:
+    """
+    Dashboard-era dependency (additive): accepts EITHER
+      - a valid Bearer token (resolves to the authoritative
+        'human:<username>' — tokens are human-only by construction), OR
+      - a well-formed legacy X-Acting-As prefix (agent:/ci:/system:/human:)
+    while SASE_REQUIRE_HUMAN_TOKEN is unset. Once strict mode flips, the
+    legacy fallback here should be removed along with the other seams.
+    Used by read-mostly dashboard endpoints so the UI never needs to send
+    X-Acting-As.
+    """
+    # isinstance guards: direct unit-test calls receive DI sentinels.
+    if isinstance(authorization, str) and authorization:
+        username = authn.resolve_bearer(db, authorization)
+        if username is None:
+            raise HTTPException(
+                401,
+                "Invalid or expired bearer token. Log in again via "
+                "POST /auth/login.",
+            )
+        return f"{HUMAN_PREFIX}{username}"
+
+    if os.environ.get("SASE_REQUIRE_HUMAN_TOKEN", ""):
+        raise HTTPException(
+            401,
+            "This deployment requires human authentication "
+            "(SASE_REQUIRE_HUMAN_TOKEN). Send 'Authorization: Bearer <token>' "
+            "obtained from POST /auth/login.",
+        )
+
+    if isinstance(x_acting_as, str) and x_acting_as.strip().startswith(ANY_PREFIXES):
+        return x_acting_as.strip()
+    raise HTTPException(
+        401,
+        "Unauthenticated. Send 'Authorization: Bearer <token>' (preferred) or "
+        f"an explicit X-Acting-As actor id ({', '.join(ANY_PREFIXES)}).",
+    )

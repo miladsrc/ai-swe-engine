@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SASE Governance Dashboard</title>
+<link rel="stylesheet" href="/ui/styles.css">
+</head>
+<body>
+  <!-- LOGIN -->
+  <div id="login-view" class="login-wrap hidden">
+    <div class="login-card">
+      <div class="login-brand"><span class="gold">SASE</span> GOVERNANCE</div>
+      <div class="login-sub">Human operating interface — ai-swe-engine</div>
+      <form id="login-form">
+        <label>Username</label>
+        <input id="login-user" autocomplete="username" required>
+        <label>Password</label>
+        <input id="login-pass" type="password" autocomplete="current-password" required>
+        <button class="btn btn-approve btn-block" type="submit">Sign in</button>
+        <div id="login-error" class="error hidden"></div>
+      </form>
+      <div class="login-foot">Identity is verified by the backend.<br>Approvals are recorded under YOUR account.</div>
+    </div>
+  </div>
+
+  <!-- APP -->
+  <div id="app-view" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="gold">SASE</span><br><small>Governance</small></div>
+      <nav id="nav"></nav>
+      <div class="side-foot">
+        <div id="whoami" class="whoami"></div>
+        <button id="logout" class="btn btn-ghost btn-sm">Logout</button>
+      </div>
+    </aside>
+    <main class="content" id="view"></main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

@@ -4,7 +4,7 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from api.routers import (projects, requirements, agent_runs, crp, mrp, vcr,
-                         traceability, evidence, blueprints, auth)
+                         traceability, evidence, blueprints, auth, dashboard)
 
 app = FastAPI(
     title="SASE Traceability Backbone",
@@ -29,6 +29,38 @@ app.include_router(traceability.router)
 app.include_router(evidence.router)
 app.include_router(blueprints.router)
 app.include_router(auth.router)
+app.include_router(dashboard.router)
+
+# Governance Dashboard UI — a pure client layer over the API (static files,
+# zero build tooling, air-gap safe). Served under /ui; / redirects there.
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
+from starlette.responses import RedirectResponse  # noqa: E402
+
+_UI_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                       "static", "ui")
+if os.path.isdir(_UI_DIR):  # keeps tests/API-only deploys working
+    _UI_INDEX = os.path.join(_UI_DIR, "index.html")
+
+    # Human access flow entry points. Both serve the same SPA shell; the
+    # client (static/ui/app.js boot) decides what to render based on the
+    # path + session token. Registered BEFORE the /ui mount so they win.
+    @app.get("/ui/login", include_in_schema=False)
+    def ui_login_page():
+        """Login page — the UI entry point for unauthenticated humans."""
+        return FileResponse(_UI_INDEX)
+
+    @app.get("/ui/dashboard", include_in_schema=False)
+    def ui_dashboard_page():
+        """Protected landing — client redirects to /ui/login without a token."""
+        return FileResponse(_UI_INDEX)
+
+    app.mount("/ui", StaticFiles(directory=_UI_DIR, html=True), name="ui")
+
+
+@app.get("/", include_in_schema=False)
+def root_redirect():
+    return RedirectResponse(url="/ui/")
 
 
 @app.middleware("http")
