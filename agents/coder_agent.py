@@ -25,7 +25,23 @@ import yaml
 
 from agents.coder_prompts import CODER_SYSTEM, coder_instruction, repair_instruction
 from agents.engine_client import EngineClient
-from agents.llm import LLMBackend
+from agents.llm import LLMBackend, prompt_hash
+
+# P2: prompt provenance. The prompts table has no writers yet; until a
+# human-approved prompt registry exists, we record the identifier, a
+# version constant, and the hash of the EXACT system prompt used so any
+# run's generation inputs can be reproduced/verified from code history.
+CODER_PROMPT_ID = "python-coder"
+PROMPT_VERSION = "v1"
+
+
+def prompt_provenance(system_prompt: str,
+                      prompt_id: str = CODER_PROMPT_ID) -> dict:
+    return {
+        "prompt_id": prompt_id,
+        "prompt_version": PROMPT_VERSION,
+        "system_prompt_hash": prompt_hash(system_prompt),
+    }
 
 FILE_BLOCK = re.compile(
     r"=== FILE:\s*(?P<path>[\w./\\-]+)\s*===\n(?P<content>.*?)=== END FILE ===",
@@ -45,6 +61,7 @@ class CoderResult:
     security_passed: bool = True
     security_findings: list[str] = field(default_factory=list)
     lint_passed: bool = True
+    lint_output: str = ""
     reflection_iterations: int = 0
 
 
@@ -72,10 +89,12 @@ class CoderAgent:
             "agent_role": "coder_agent",
             "task_type": "code_generation",
             "model_name": getattr(self.llm, "model", "template-offline"),
+            "model_version": getattr(self.llm, "version", None),
             "model_short": "QW",
             "prd_id": prd_id,
             "user_story_id": user_story_id,
             "spec_id": spec_id,
+            **prompt_provenance(CODER_SYSTEM),
         })
         run_id = run["id"]
 
@@ -84,7 +103,7 @@ class CoderAgent:
             files = parse_file_blocks(raw)
             if not files:
                 raise RuntimeError("LLM produced no parsable FILE blocks")
-            self._write_files(files)
+            written: list[str] = list(self._write_files(files))
 
             passed, output = run_tests(self.workspace)
 
@@ -106,21 +125,25 @@ class CoderAgent:
                 if not new_files:
                     break
                 files = new_files
-                self._write_files(files)
+                written.extend(self._write_files(files))
                 passed, output = run_tests(self.workspace)
 
             sec_ok, sec_findings = security_scan(files)
-            lint_ok, _ = run_lint(self.workspace)
-            commit = self._commit(run_id, spec_id)
+            lint_ok, lint_output = run_lint(self.workspace)
+            # P5: stage ONLY the files this run wrote (surgical staging) —
+            # `git add -A` would sweep in leftovers from earlier runs.
+            written = sorted(set(written))
+            commit = self._commit(run_id, spec_id, written)
             result = CoderResult(
                 run_id=run_id,
-                generated_files=sorted(files),
+                generated_files=written,
                 tests_passed=passed,
-                test_output=output[-2000:],
+                test_output=output,
                 commit_hash=commit,
                 security_passed=sec_ok,
                 security_findings=sec_findings[:20],
                 lint_passed=lint_ok,
+                lint_output=lint_output,
                 reflection_iterations=repairs,
             )
 
@@ -181,20 +204,32 @@ class CoderAgent:
     def _generate_code(self, spec_yaml: str) -> str:
         return self.llm.generate(CODER_SYSTEM, coder_instruction(spec_yaml))
 
-    def _write_files(self, files: dict[str, str]) -> None:
+    def _write_files(self, files: dict[str, str]) -> list[str]:
+        """Write files inside the workspace; returns the relative paths
+        actually written (P5: used for surgical git staging)."""
+        written = []
         for rel, content in files.items():
             path = (self.workspace / rel).resolve()
             if self.workspace.resolve() not in path.parents:
                 raise RuntimeError(f"refusing to write outside workspace: {rel}")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
+            written.append(rel)
+        return written
 
-    def _commit(self, run_id: str, spec_id: str) -> str:
+    def _commit(self, run_id: str, spec_id: str,
+                paths: list[str] | None = None) -> str:
         def git(*args: str) -> str:
             return subprocess.run(["git", *args], cwd=self.workspace,
                                   capture_output=True, text=True, check=True
                                   ).stdout.strip()
-        git("add", "-A")
+        # P5: stage only this run's generated files. A missing/empty list
+        # falls back to `add -A` for backward compatibility with callers
+        # that don't track paths (e.g. the Spring Boot __main__ script).
+        if paths:
+            git("add", "--", *paths)
+        else:
+            git("add", "-A")
         if not git("status", "--porcelain"):
             return git("rev-parse", "HEAD")  # nothing new; reuse HEAD
         git("commit", "-m",
@@ -279,10 +314,31 @@ def _strip_code_fence(content: str) -> str:
 # Patterns that have no business in an offline stdlib-only CLI tool.
 # NOTE: plain open(path, 'w') is legitimate (the store file) and must
 # NOT be flagged — v0 of this scanner did and produced a false positive.
-_DANGEROUS = re.compile(
+_DANGEROUS_PY = re.compile(
     r"\b(eval|exec|compile)\s*\(|\bos\.system\b|\bsubprocess\.\w*shell\b"
     r"|\bsocket\.(socket|create_connection)\b|\bpickle\.loads?\b"
     r"|\b__import__\s*\(", re.MULTILINE)
+
+# P5: Java/Kotlin sources were previously scanned with the Python
+# patterns verbatim, which matched nothing useful. These are the
+# equivalent dynamic-execution / raw-deserialization red flags for JVM
+# code generated by the Spring Boot coder agent.
+_DANGEROUS_JVM = re.compile(
+    r"\bRuntime\s*\.\s*getRuntime\s*\(\s*\)\s*\.\s*exec"
+    r"|\bnew\s+ProcessBuilder\b|\bClass\s*\.\s*forName\s*\("
+    r"|\bsun\.misc\.Unsafe\b|\bObjectInputStream\b"
+    r"|\bXMLDecoder\b", re.MULTILINE)
+
+_SCAN_RULES: tuple[tuple[tuple[str, ...], "re.Pattern[str]"], ...] = (
+    ((".java", ".kt", ".scala"), _DANGEROUS_JVM),
+)
+
+
+def _pattern_for(path: str) -> "re.Pattern[str]":
+    for extensions, pattern in _SCAN_RULES:
+        if path.endswith(extensions):
+            return pattern
+    return _DANGEROUS_PY
 
 
 def security_scan(files: dict[str, str]) -> tuple[bool, list[str]]:
@@ -290,13 +346,17 @@ def security_scan(files: dict[str, str]) -> tuple[bool, list[str]]:
     Real (if naive) offline scan: the generated source is inspected for
     dynamic-execution / shell / raw-socket patterns. Evidence comes from
     this function's output, never from an LLM's self-assessment.
+
+    Language-aware since P5: JVM files (.java/.kt/.scala) are checked
+    against JVM patterns; everything else against the Python patterns.
     """
     findings = []
     for path, content in files.items():
+        pattern = _pattern_for(path)
         for i, line in enumerate(content.splitlines(), 1):
             if line.lstrip().startswith("#"):
                 continue
-            if _DANGEROUS.search(line):
+            if pattern.search(line):
                 findings.append(f"{path}:{i}: {line.strip()[:80]}")
     return (not findings), findings
 
@@ -327,11 +387,16 @@ def _pseudo_pr_number(spec_id: str, run_id: str = "") -> int:
 
 def record_ci_evidence(ci_engine: EngineClient, mrp_id: str,
                        tests_passed: bool, security_passed: bool,
-                       lint_passed: bool) -> dict:
+                       lint_passed: bool,
+                       execution_context: dict | None = None) -> dict:
     """
     The LLM-free ci:test-runner identity records what the REAL subprocess
     checks reported. Every status here traces to an executed command or
     scan — never to a model's opinion (§5.6.5).
+
+    P7: `execution_context` (optional) carries the raw evidence — full
+    test output, scan findings, lint output, run metadata — which the
+    server stores in the append-only audit entry context.
     """
     payload = {
         "unit_tests_status": "passed" if tests_passed else "failed",
@@ -340,4 +405,6 @@ def record_ci_evidence(ci_engine: EngineClient, mrp_id: str,
         "static_analysis_status": "passed" if lint_passed else "failed",
         "lint_status": "passed" if lint_passed else "failed",
     }
+    if execution_context is not None:
+        payload["execution_context"] = execution_context
     return ci_engine.patch(f"/mrps/{mrp_id}/evidence", payload)

@@ -38,7 +38,9 @@ from agents.spec_agent import SpecAgent
 
 # Agents' coding target: a real local git repo, one level up.
 WORKSPACE = Path(__file__).resolve().parents[2] / "todo-cli"
-CI_TOKEN_DEFAULT = "dev-ci-token-change-me"   # matches docker-compose.yml
+# P3: no hardcoded token fallback. The CI client sends X-CI-Token only
+# when SASE_CI_TOKEN is set; the server fail-closes (503) if it isn't
+# configured on the deployment (docker-compose provides a dev value).
 
 STATE_FILE = Path(__file__).resolve().parent.parent / ".pipeline_state.json"
 
@@ -136,10 +138,17 @@ def _run_code_phase(base_url: str, use_ollama: bool | None,
 
     # Evidence comes from the LLM-free CI role, token-authenticated.
     ci = EngineClient(base_url, ROLES["test_runner"],
-                      ci_token=os.environ.get("SASE_CI_TOKEN",
-                                              CI_TOKEN_DEFAULT))
+                      ci_token=os.environ.get("SASE_CI_TOKEN"))
     record_ci_evidence(ci, result.mrp_id, result.tests_passed,
-                       result.security_passed, result.lint_passed)
+                       result.security_passed, result.lint_passed,
+                       execution_context={
+                           "test_output": result.test_output[-8000:],
+                           "security_findings": result.security_findings,
+                           "lint_passed": result.lint_passed,
+                           "lint_output": (result.lint_output or "")[-4000:],
+                           "generated_files": result.generated_files,
+                           "reflection_iterations": result.reflection_iterations,
+                       })
     print(f"[ci] evidence recorded on {result.mrp_id}")
 
     print("\n=== HUMAN GATES (§3.6.3 / §5.6) ===")
