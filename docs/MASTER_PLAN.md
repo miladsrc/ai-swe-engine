@@ -1,8 +1,8 @@
 # AI-SWE-ENGINE MASTER DEVELOPMENT PLAN
 
-**Version:** 1.0
-**Date:** 2026-08-25
-**Status:** DRAFT - Phase 0 (Foundation) complete; Phase 1 (Governance Integrity Hardening) next
+**Version:** 1.1
+**Date:** 2026-08-25 (v1.1 status sync 2026-08-26)
+**Status:** Phase 0 COMPLETE; Phase 1 COMPLETE; hardening batch + interstitial Human Identity milestone COMPLETE; Phase 2 (Separation of Duties) next
 
 ---
 
@@ -187,12 +187,28 @@ Let a human describe a software requirement in natural language and receive a wo
 
 **Definition of Done:** All above tests merged and passing; no evidence-writing path in the codebase lacks a provenance tag (verified by a lint/check rule, not manual review).
 
-**Status:** NOT STARTED - next up.
+**Status:** COMPLETE (2026-08-25). Both bugs closed with regression tests; provenance tagging on evidence; read-only evidence export endpoint (`GET /evidence/run/{id}`); commits 13f61a5 + 367a5d7. Follow-up hardening batch (2026-08-26): fail-closed CI token, orphan-run reaper, evidence persistence, blueprint audit, LLM retry, surgical staging, language-aware scan — see CHANGELOG.
 
 **Possible future improvements:** Move evidence storage to a genuinely append-only construct (e.g., write-once table constraints or a hash-chained log) once volume justifies it.
 ---
 
+### INTERSTITIAL MILESTONE - Human Identity (approved 2026-08-24/26, COMPLETE)
+
+NOT a numbered phase - an approved security workstream executed between
+Phase 1 and Phase 2 because every later phase depends on trustworthy human
+identity at the gates. Scope: users + api_tokens tables (migration 003),
+PBKDF2 password hashing, bearer tokens (sha256-at-rest), POST /auth/login +
+/auth/me, authoritative Bearer identity in require_human_actor,
+SASE_REQUIRE_HUMAN_TOKEN fail-closed flag (currently OFF), full token-flow
+migration of tests/docs/tooling incl. live gate-proof trio.
+Full record: docs/PHASES/HUMAN-IDENTITY.md. Commits: 3e0d294, a2ed450 (8e08cc1).
+
+---
+
 ### PHASE 2 - Separation of Duties
+
+**Status:** Planned - NEXT UP. (Note: the completed Human Identity
+milestone above is NOT this phase; separation of duties has not started.)
 
 **Goal:** Remove the conflict of interest where the Coder Agent both writes code and certifies its own tests.
 
@@ -220,7 +236,7 @@ Let a human describe a software requirement in natural language and receive a wo
 
 **Definition of Done:** Architecture diagram and code agree; a code review confirms no agent certifies its own output.
 
-**Status:** Planned.
+**Status:** see heading note above - Planned, next up.
 
 **Possible future improvements:** Same separation-of-duties principle should be applied to any future agent that both proposes and would otherwise self-verify (e.g., a future Refactor Agent).
 
@@ -419,40 +435,34 @@ Let a human describe a software requirement in natural language and receive a wo
 ---
 
 ## 4. Current State Analysis
+*(Status sync 2026-08-26.)*
 
 ### Already Completed
-- Agent prompt engineering (ProductAgent, SpecAgent) with system prompts and worked examples.
-- Orchestrator refactor removing the SpecAgent bypass.
-- Empty-context bug fix (US/AC endpoints now echo body_ref).
-- AC-reference enforcement (_enforce_ac_refs) as a governance post-processing layer.
-- CoderAgent: reads specs, writes files, runs pytest, runs security scan, commits, participates in MRP/CRP.
-- coder_prompts.py with engineering rules (deterministic tests, subprocess invocation, environment-overridable storage).
-- End-to-end offline loop proven: RUN-QW-2026-00009, commit c8790ed5.
-- Documentation: README.md rewrite; FULL_DOCUMENTATION.md expansion.
-- 58 passing tests; clean working tree.
+- Phase 0 in full (see PHASE 0 status).
+- Phase 1 in full: both governance bugs closed with regression tests; provenance tagging; evidence export endpoint.
+- Hardening batch P1-P8: env-configurable LLM + retry, AgentRun provenance fields populated, fail-closed secrets, orphan-run reaper, surgical git staging, language-aware security scan, execution-evidence persistence, blueprint audit.
+- Interstitial Human Identity milestone: users/tokens/login, authoritative Bearer at human gates, token-flow migration complete, strict flag ready but OFF.
+- Designer agent + blueprints router exist (from a parallel session; designer role uncommitted at time of writing).
+- 101 unit tests + live E2E chain passing.
 
 ### Partially Completed
-- Governance state machine (MRP/CRP/VCR) works in the happy path but has two known integrity gaps.
-- Infra roadmap: PostgreSQL + API active; Redis, Qdrant, Ollama present only as commented-out scaffolding.
+- Infra roadmap: PostgreSQL + API active; Redis, Qdrant present only as commented-out scaffolding.
 
 ### Missing
-- Separation of duties between Coder Agent and test verification.
-- Provenance tagging on evidence records.
-- Semantic memory / retrieval (Qdrant not yet wired in).
-- Any self-repair/retry loop.
+- Separation of duties between Coder Agent and test verification (Phase 2).
+- Semantic memory / retrieval (Qdrant not yet wired in) (Phase 3).
+- Any self-repair/retry loop beyond the coder's bounded reflection (Phase 4).
 - Any codified autonomy-level policy.
-- Read-only evidence export for Saras advisory role.
 - An air-gap dependency audit.
 
 ### Technical Debt
-- CRP endpoint bypasses assert_run_patchable terminal-state guard.
-- open_crp_ids snapshot misses CRPs raised after MRP creation.
+- Resolved: CRP terminal-state bypass; open_crp_ids snapshot staleness (both Phase 1).
+- Open: prompts table has no writers (provenance hashes reference code history); evidence-export endpoint is anonymous (documented gap, fix awaiting approval); Spring Boot/designer agents carry placeholder upstream ids; rate limiting absent on /auth/login.
 
 ### Architectural Risks
-- Coder Agent self-attesting its own tests (conflict of interest).
+- Coder Agent self-attesting its own tests (conflict of interest - Phase 2 target).
 - No mechanism yet to catch wrong-but-working LLM output beyond human review.
-- No defined autonomy model prior to this document.
-- Redis/Qdrant/Ollama responsibilities were previously unclear (resolved here, not yet implemented).
+- Human identity strict mode available but disabled (permissive legacy header path still open by design).
 
 ---
 

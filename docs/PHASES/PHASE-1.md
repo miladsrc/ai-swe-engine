@@ -1,10 +1,10 @@
 # PHASE 1 - Governance Integrity Hardening
 
 > **Objective:** Close known integrity gaps before adding any further capability.
-> **Current status:** NOT STARTED - next up
+> **Current status:** COMPLETE (2026-08-25)
 > **Owner:** m.barani
 > **Created date:** 2026-08-25
-> **Last update:** 2026-08-25
+> **Last update:** 2026-08-26 (status sync)
 > **Phase:** 1
 > **Dependencies:** None beyond existing PostgreSQL
 > **Tests:** Regression tests for both bugs + provenance assertion tests
@@ -90,12 +90,18 @@ HIGH - this phase closes the only known ways the governance layer can currently 
 
 ## 12. Status
 
-**NOT STARTED - next up**
+**COMPLETE (2026-08-25).** Evidence:
+- Bug 1 fixed: `api/routers/crp.py` calls `assert_run_patchable` before blocking; regression test asserts 409.
+- Bug 2 fixed: `mrp_ready_for_merge` queries live CRP data (gates.py); snapshot kept for display only; regression tests cover post-MRP CRPs.
+- Provenance tagging: `MRPEvidenceUpdate.provenance` (human|tool|llm), stored in audit context.
+- Read-only export: `GET /evidence/run/{run_id}`.
+- Commits: `13f61a5`, merged via `367a5d7`.
+- Follow-on hardening batch (2026-08-26, P1-P8) extended this phase's integrity work — see CHANGELOG and docs/PROGRESS/2026-08-26.md.
 
 ## 13. Risks
 
-- Schema change may require data migration for existing evidence records
-- Export endpoint design needs to be defined (what fields? what format?)
+- ~~Schema change may require data migration for existing evidence records~~ — none required (provenance stored in audit JSONB).
+- Export endpoint design: implemented as read-only aggregate; known gap — endpoint is currently anonymous (documented, fix awaiting approval).
 
 ## 14. Possible Future Improvements
 

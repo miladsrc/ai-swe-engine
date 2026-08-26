@@ -129,7 +129,7 @@ proves an end-to-end chain works (it does — see §11).
 
 ## 4. Data Model
 
-All tables defined in `migrations/001_init.sql`; mirrored 1:1 by `api/models.py`.
+Tables from `migrations/001_init.sql` + `003_users.sql`; mirrored in `api/models.py`.
 
 ### Enums
 - `artifact_confidence`: `human_authored | inferred | confirmed`
@@ -155,6 +155,8 @@ All tables defined in `migrations/001_init.sql`; mirrored 1:1 by `api/models.py`
 | `vcrs` | id | Decision record: decision_status, selected_option, rationale, decided_by/role, update_* flags per artifact type, required_updates JSONB, `promoted_to_org_memory` curation gate |
 | `mrps` | id | Per-PR readiness: PR ref, branch, commit, created_by_agent_run, requirement ID arrays, blueprint ref, per-check evidence fields (unit/integration/e2e tests, coverage %, lint, static analysis, complexity, security scan, dep scan), ai_review_status+notes, open_crp_ids[], status, human_reviewer |
 | `audit_log` | bigserial | Append-only: actor_type (`agent|human|system`), actor_id, action, artifact ref, context JSONB, tools_used, result, human_decision |
+| `users` | username | Phase 2 human identity: display_name, PBKDF2 password_hash, is_active (migration 003) |
+| `api_tokens` | token_hash | sha256 of raw bearer token (raw shown once), FK username, expires_at, revoked, last_used_at (migration 003) |
 
 Indexes: `agent_runs(project_id)`, `crps(status, severity)`, `mrps(status)`,
 `audit_log(artifact_type, artifact_id)`.
@@ -244,6 +246,11 @@ Base URL `http://localhost:8000` · Interactive docs at `/docs`.
 |---|---|
 | `GET /traceability/chain/{mrp_id}` | Reconstructs MRP → Specs → PRD → Agent Run → CRPs → VCRs; returns `fully_traceable: bool` |
 | `GET /traceability/audit/{type}/{id}` | Ordered action history for one artifact |
+
+### Auth - `api/routers/auth.py`
+- `POST /auth/login` — password → bearer token (raw shown once; audited success/failure)
+- `GET /auth/me` — resolve presented bearer token to authoritative identity
+- 🔒 = requires `Authorization: Bearer <token>` (authoritative) or legacy `X-Acting-As: human:` until strict mode
 
 ### Health
 | Method/Path | Description |

@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-08-26 (documentation audit & sync)
+
+### Changed (docs only — zero implementation changes)
+- MASTER_PLAN v1.1: Phase 1 marked COMPLETE; interstitial Human Identity
+  milestone recorded; Current State Analysis refreshed; Phase 2 (Separation
+  of Duties) confirmed as next, still Planned
+- PHASES/PHASE-1.md: status → COMPLETE with evidence
+- PHASES/HUMAN-IDENTITY.md NEW: complete identity-workstream record with
+  implemented / approved-not-implemented / future separation
+- ARCHITECTURE.md: authentication boundary subsection; component table;
+  diagrams unchanged (no architectural change occurred)
+- GAP_ANALYSIS.md: refreshed to post-Phase-1/identity reality
+- FULL_DOCUMENTATION: users/api_tokens data model rows; auth API reference
+
+---
+
 ## 2026-08-26 (token migration COMPLETE — strict-mode ready)
 
 ### Changed

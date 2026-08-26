@@ -1,11 +1,11 @@
 # ai-swe-engine Architecture
 
 > **Objective:** Document the current and target architecture of the ai-swe-engine.
-> **Current status:** Current state documented; target state defined in MASTER_PLAN.md.
+> **Current status:** Current state documented; target state defined in MASTER_PLAN.md. Architecture UNCHANGED by the Human Identity milestone — authentication was added inside the existing security seam, not as a new layer.
 > **Owner:** Sara (external advisory)
 > **Created date:** 2026-08-25
-> **Last update:** 2026-08-25
-> **Phase:** Phase 0 complete
+> **Last update:** 2026-08-26
+> **Phase:** Phase 0 + Phase 1 complete; interstitial Human Identity complete; Phase 2 next
 > **Dependencies:** MASTER_PLAN.md
 > **Tests:** N/A (documentation only)
 > **Evidence:** Code inspection + Master Plan
@@ -50,16 +50,20 @@
 
 | Component | Status | Notes |
 |---|---|---|
-| FastAPI engine (api/) | Running | 12 routes, hard gates, audit |
-| PostgreSQL | Running | localhost:5433, auto-migrations |
+| FastAPI engine (api/) | Running | hard gates, audit, auth (/auth/login, /auth/me) |
+| PostgreSQL | Running | localhost:5433, auto-migrations (003 adds users/api_tokens) |
 | Product Agent | Functional | drafts PRD/US/AC via LLM |
 | Spec Agent | Functional | drafts YAML spec via LLM |
 | Coder Agent | Functional | writes code, runs tests, commits |
+| Spring Boot Coder Agent | Functional | Maven variant (coder_springboot.py) |
+| Designer Agent | Functional | DESIGN.md + frontend generation (uncommitted at doc time) |
 | Orchestrator | Functional | sequential pipeline, --online/--offline/--code |
+| Human Identity (users/api_tokens) | Running | Bearer tokens authoritative at human gates; strict flag OFF |
 | Ollama | Running | qwen2.5-coder:7b q4, CPU-only |
 | Reviewer Agent | Defined | role in config.py, no implementation |
 | Reflection Agent | Defined | role in config.py, no implementation |
 | Test Runner | Functional | LLM-free, records evidence |
+| Blueprints router | Functional | blueprint CRUD, audited |
 | Qdrant | NOT deployed | commented out in docker-compose |
 | Redis | NOT deployed | commented out in docker-compose |
 
@@ -127,6 +131,20 @@
 ### Inner Boundary: LLM Output <-> Governance Engine
 - No LLM output becomes approved without passing a deterministic gate.
 - LLMs produce content; deterministic code governs actions.
+
+### Authentication Boundary: Human vs Agent identity (added by Human Identity milestone)
+- **Human decisions** (spec validate, MRP human-decision, VCR writes): identity
+  resolves inside `require_human_actor` — a valid `Authorization: Bearer`
+  token is AUTHORITATIVE (`human:<username>` from the users table); any
+  X-Acting-As header value is ignored. Legacy prefix check remains only while
+  `SASE_REQUIRE_HUMAN_TOKEN` is unset (fail-closed once set).
+- **Agent identities** (`agent:*`) and **machine actors** (`ci:`/`system:`) do
+  NOT authenticate via users/tokens: agents act under allowlisted role
+  identities on non-human endpoints; CI evidence additionally requires the
+  shared `SASE_CI_TOKEN` (fail-closed when unconfigured).
+- **Audit ownership:** `audit_log` (append-only, DB triggers) is the single
+  owner of identity evidence; logins, gate decisions, and reaper/revert
+  system actions are all recorded there with the resolved actor id.
 
 ---
 
