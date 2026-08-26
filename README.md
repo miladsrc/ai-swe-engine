@@ -303,6 +303,29 @@ curl -X POST localhost:8000/specs/<id>/validate \
 - Until `SASE_REQUIRE_HUMAN_TOKEN` is set, the legacy `X-Acting-As` path keeps
   working for local dev and existing agent tooling.
 
+## Governance Dashboard (UI)
+
+> **Roadmap note:** the fuller Human Operating Layer (roles, assignment routing,
+> per-user My Tasks, notifications, team management) is **deferred to Phase 9 —
+> Platform UI / Human Operations Layer** (owner decision 2026-08-26). Concepts
+> preserved in `docs/HUMAN_OPERATING_LAYER_PROPOSAL.md`.
+
+Open **http://localhost:8000/ui/** after `docker compose up`. Log in with your
+engine account (`scripts/create_user.py` creates users; tokens from
+`/auth/login`). Black & gold = authority/decisions; blue & white = evidence.
+
+Screens: personal dashboard · Approval Center (spec validations, CRPs, MRPs)
+· decision detail with "acting as <you>" confirmation · Agent Runs · Evidence
+chain viewer (Requirement→Spec→Run→MRP→CRP→VCR) · filterable Audit Logs ·
+Projects · Agent Console (instructions recorded to the audit trail; execution
+remains CLI-driven) · Settings.
+
+The UI is a pure client layer: it owns no state and grants no rights — every
+decision goes through the same gated backend endpoints, under YOUR token
+identity. It never sends X-Acting-As. Read-only data endpoints require an
+authenticated actor (`require_authenticated_actor`: bearer preferred, legacy
+header until strict mode).
+
 ## Project structure
 
 ```

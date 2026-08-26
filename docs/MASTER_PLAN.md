@@ -203,6 +203,14 @@ SASE_REQUIRE_HUMAN_TOKEN fail-closed flag (currently OFF), full token-flow
 migration of tests/docs/tooling incl. live gate-proof trio.
 Full record: docs/PHASES/HUMAN-IDENTITY.md. Commits: 3e0d294, a2ed450 (8e08cc1).
 
+**Planner's note (2026-08-26, no phase changes):** the Governance Dashboard
+(/ui) shipped as interstitial tooling. The fuller Human Operating Layer
+(roles, assignment routing, My Tasks, notifications) was proposed and then
+**DEFERRED by owner decision** to **Phase 9 — Platform UI / Human Operations
+Layer** (below). Architectural concepts are preserved in
+docs/HUMAN_OPERATING_LAYER_PROPOSAL.md; nothing may be implemented from it
+until that phase begins.
+
 ---
 
 ### PHASE 2 - Separation of Duties
@@ -236,7 +244,7 @@ milestone above is NOT this phase; separation of duties has not started.)
 
 **Definition of Done:** Architecture diagram and code agree; a code review confirms no agent certifies its own output.
 
-**Status:** see heading note above - Planned, next up.
+**Status:** see heading note above - DESIGN COMPLETE (2026-08-26, docs/PHASES/PHASE-2.md); implementation not started, awaiting owner approval.
 
 **Possible future improvements:** Same separation-of-duties principle should be applied to any future agent that both proposes and would otherwise self-verify (e.g., a future Refactor Agent).
 
@@ -430,8 +438,38 @@ milestone above is NOT this phase; separation of duties has not started.)
 **Success criteria:** A defined, broad set of change classes operate reliably at L2/L3 with a clean incident history over a meaningful time window.
 
 **Definition of Done:** This phase has no fixed done - its re-evaluated on a recurring cadence.
-
 **Status:** Long-term horizon; do not pursue platform or AI OS framing before this phase is substantially underway.
+
+---
+
+### PHASE 9 - Platform UI / Human Operations Layer
+
+**Goal:** Build the complete human-facing frontend application: a full management dashboard and per-user workspace over the governance engine.
+
+**Why this phase exists:** Authentication and the interim dashboard exist, but a complete human operating surface is a major frontend product effort. The owner deferred it (2026-08-26) so backend governance milestones stay undiluted; this phase gives it a formal home without disturbing Phases 0-8.
+
+**Current problem solved:** No per-user workspace, no role-based routing of decisions, no requirement wizard, no evidence timeline visualization, no team/permission management UI.
+
+**Scope (from owner directive):** complete management dashboard; per-user workspace; approval center; MRP/CRP/VCR review screens; evidence timeline visualization; agent status monitoring; project workspace; requirement creation wizard; team management; notifications; role and permission management.
+
+**Architectural preparation (recorded):** users, roles, assignments, approvals, notifications, artifact ownership, review workflows, evidence visualization — see docs/HUMAN_OPERATING_LAYER_PROPOSAL.md. Additive only: existing `users` table remains the identity source; decisions keep flowing through existing gated endpoints; audit_log stays the single source of truth.
+
+**New components:** role model (`users.role` + require_role), artifact_assignments routing, derived notification queries, full frontend application (successor to static/ui).
+
+**Changed components:** none retroactively — gates, evidence, and audit mechanisms are consumed as-is.
+
+**Dependencies:** Phases 1-4 stable; Separation of Duties (Phase 2) complete so pipeline execution can become orchestrator/API-owned (the pipeline-start API was deliberately withheld until then); strict token mode enabled before multi-user features ship.
+
+**Human approval points:** role model definition; scope sign-off at phase start.
+
+**Tests required:** role-enforcement tests on every gate; assignment lifecycle tests; UI-level workflow tests mirroring test_traceability_chain.py through the frontend paths.
+
+**Success criteria:** two distinct human accounts can each work their own queue with correct authority boundaries; every UI action appears in audit under the acting identity.
+
+**Definition of Done:** all screens live against the production engine; zero bypass paths; documentation updated.
+
+**Status:** DEFERRED - recorded 2026-08-26; do not start before its dependencies are met.
+
 ---
 
 ## 4. Current State Analysis

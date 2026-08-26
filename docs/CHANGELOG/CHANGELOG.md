@@ -2,6 +2,55 @@
 
 ---
 
+## 2026-08-26 (Phase 2 SoD design — no implementation)
+
+### Added
+- docs/PHASES/PHASE-2.md: full Separation of Duties design — self-certification
+  risk register (R1-R7), orchestrator-owned verification steps (A-H), evidence
+  ownership rules, new gates G7/G8, migration plan behind SASE_SOD_MODE flag,
+  Reviewer Agent as separate advisory LLM call.
+- MASTER_PLAN: Phase 2 status → DESIGN COMPLETE; implementation awaiting approval.
+
+---
+
+## 2026-08-26 (roadmap decision: Human Operating Layer deferred)
+
+### Decision (owner)
+- Multi-user workspace/dashboard effort DEFERRED to new roadmap entry
+  **Phase 9 - Platform UI / Human Operations Layer** (after Phase 8;
+  phases 0-8 unchanged, Phase 2 SoD scope untouched).
+- docs/HUMAN_OPERATING_LAYER_PROPOSAL.md rewritten as architectural
+  preparation only: concepts preserved (users, roles, assignments,
+  approvals, notifications, artifact ownership, review workflows, evidence
+  visualization). No migrations/endpoints/UI to be built from it until
+  Phase 9 starts.
+- Notes synced in ARCHITECTURE.md, README.md, FULL_DOCUMENTATION.md.
+
+---
+
+## 2026-08-26 (Governance Dashboard)
+
+### Added
+- static/ui/: zero-build vanilla-JS dashboard served at /ui (login, personal
+  dashboard, Approval Center + decision detail with acting-as confirmation,
+  Agent Runs, evidence chain viewer, filterable audit viewer, projects,
+  Agent Console, settings). Black/gold + blue/white theme per
+  docs/design/DASHBOARD_DESIGN.md (designer-agent DESIGN.md contract).
+- api/routers/dashboard.py: additive read-only endpoints (overview, approvals,
+  agent-runs list, filterable audit, project summary) guarded by the new
+  require_authenticated_actor (bearer-first); console instruction recorder
+  writes ONLY to the existing append-only audit log.
+- api/security.py: require_authenticated_actor dependency (additive).
+- Dockerfile: COPY static/ui.
+- tests/test_dashboard_live.py: 5 live tests (identity enforcement on new
+  endpoints, bearer reads, console audit identity, gates still enforced).
+
+### Deliberately NOT done
+- No websocket/SSE (polling per design), no server-side agent spawning
+  (console records instructions; execution stays CLI), no second auth system.
+
+---
+
 ## 2026-08-26 (documentation audit & sync)
 
 ### Changed (docs only — zero implementation changes)

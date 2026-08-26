@@ -252,6 +252,20 @@ Base URL `http://localhost:8000` · Interactive docs at `/docs`.
 - `GET /auth/me` — resolve presented bearer token to authoritative identity
 - 🔒 = requires `Authorization: Bearer <token>` (authoritative) or legacy `X-Acting-As: human:` until strict mode
 
+### Dashboard - `api/routers/dashboard.py` + `static/ui/`
+Read-only client support for the Governance Dashboard (`/ui/`), all requiring
+`require_authenticated_actor` (bearer preferred):
+- `GET /dashboard/overview` — pending/active counters
+- `GET /dashboard/approvals` — Approval Center inbox (spec validations, open CRPs, MRPs awaiting human)
+- `GET /dashboard/agent-runs` — run list with status/project filters
+- `GET /dashboard/audit` — filterable audit query (action, actor, artifact)
+- `GET /dashboard/projects/{id}/summary` — one-page project state
+- `POST /dashboard/console/instructions` — 🔒 human-only; records an operator instruction into the append-only audit trail. **Does not spawn agents** — execution stays CLI-driven; the console is a governed instruction log + live activity feed.
+
+The UI itself is static files under `/ui` (no build tooling, air-gap safe).
+Design tokens: docs/design/DASHBOARD_DESIGN.md (black/gold = decisions,
+blue/white = evidence — compatible with agents/designer_agent.py DESIGN.md contract).
+
 ### Health
 | Method/Path | Description |
 |---|---|
@@ -282,6 +296,13 @@ unaffected: they act under `agent:`/`ci:` identities on non-human
 endpoints and cannot obtain tokens.
 
 ### Token-flow migration status (2026-08-26 review)
+
+> **DEFERRED to Phase 9 — Platform UI / Human Operations Layer** (owner
+> decision 2026-08-26; not implemented until then): multi-user roles,
+> artifact assignment/routing, per-user My Tasks + derived notifications,
+> team/permission management. Concepts preserved in
+> docs/HUMAN_OPERATING_LAYER_PROPOSAL.md. Pipeline-start API deliberately
+> deferred until Phase 2 SoD.
 
 | Component | Status |
 |---|---|

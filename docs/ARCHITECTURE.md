@@ -146,6 +146,26 @@
   owner of identity evidence; logins, gate decisions, and reaper/revert
   system actions are all recorded there with the resolved actor id.
 
+### UI Boundary (Governance Dashboard, 2026-08-26)
+The dashboard (`static/ui/`, served at `/ui`) is a PURE CLIENT LAYER — no new
+trust boundary, no second authorization system. It authenticates via the same
+`/auth/login` bearer tokens, reads through additive read-only endpoints
+(`/dashboard/*`, guarded by `require_authenticated_actor`), and performs
+decisions exclusively at the pre-existing gated endpoints. The backend remains
+the sole source of truth; the UI owns no state and cannot bypass any gate.
+Realtime = polling (15s); no websocket/SSE infrastructure was added.
+
+Human workflow it supports:
+Login → Dashboard → Agent work → CRP/MRP/VCR review → Approve/Reject → Audit record → Evidence chain
+
+### PROPOSED extension (not implemented): Human Operating Layer
+Multi-user roles (users.role + require_role), artifact assignment/routing,
+per-user My Tasks and derived notifications — **DEFERRED by owner decision
+(2026-08-26) to Phase 9 — Platform UI / Human Operations Layer**
+(docs/HUMAN_OPERATING_LAYER_PROPOSAL.md). Additive only; no boundary changes;
+pipeline-start API deliberately deferred until Phase 2 SoD restructures
+execution ownership.
+
 ---
 
 ## 4. Component Responsibilities
