@@ -1,5 +1,5 @@
-"""
-Spring Boot Coder Agent — adapts CoderAgent for Java/Maven projects.
+﻿"""
+Spring Boot Coder Agent â€” adapts CoderAgent for Java/Maven projects.
 Overrides test runner to use `mvn test` instead of `pytest`.
 """
 
@@ -8,8 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agents.coder_agent import (CoderAgent, record_ci_evidence, parse_file_blocks,
-                                security_scan, prompt_provenance)
+from agents.coder_agent import (CoderAgent, CoderResult, record_ci_evidence,
+                                parse_file_blocks, security_scan,
+                                prompt_provenance)
 from agents.config import ROLES
 from agents.engine_client import EngineClient, human_curl_auth, print_human_auth_hint
 from agents.llm import pick_backend
@@ -20,7 +21,7 @@ JAVA_CODER_SYSTEM = """You are the Coding Agent in a governed AI engineering \
 organization. You implement a technical specification as complete, \
 runnable Java Spring Boot files.
 
-OUTPUT CONTRACT — for EVERY file you produce, output exactly:
+OUTPUT CONTRACT â€” for EVERY file you produce, output exactly:
 
 === FILE: <relative/path> ===
 <complete file content>
@@ -29,7 +30,7 @@ OUTPUT CONTRACT — for EVERY file you produce, output exactly:
 HARD RULES:
 1. Nothing outside FILE blocks. No explanations, no plans, no fences \
 around the blocks.
-2. File content must be COMPLETE and runnable — no "...", no TODOs, no \
+2. File content must be COMPLETE and runnable â€” no "...", no TODOs, no \
 truncated methods.
 3. Implement EXACTLY what the spec's behavior/edge_cases require. Do not \
 add extra features.
@@ -124,8 +125,11 @@ class SpringBootCoderAgent(CoderAgent):
         """Override to use Java-specific prompts."""
         return self.llm.generate(JAVA_CODER_SYSTEM, java_coder_instruction(spec_yaml))
     
-    def implement_spec(self, spec_id, prd_id=None, user_story_id=None):
-        """Override to use Maven tests instead of pytest."""
+    def implement_spec(self, spec_id, prd_id=None, user_story_id=None,
+                       propose_only=False):
+        """Override to use Maven tests instead of pytest.
+        propose_only=True (Phase 2 SoD strict): generation + commit ONLY â€”
+        verification is owned by the orchestrator."""
         spec = self.engine.get(f"/specs/{spec_id}")
         spec_yaml = spec["body_ref"]
         from agents.coder_agent import extract_open_questions
@@ -153,6 +157,19 @@ class SpringBootCoderAgent(CoderAgent):
                 raise RuntimeError("LLM produced no parsable FILE blocks")
             written: list[str] = list(self._write_files(files))
 
+            if propose_only:
+                # SoD boundary: proposal stops after the commit.
+                written = sorted(set(written))
+                commit = self._commit(run_id, spec_id, written)
+                self.engine.patch(f"/agent-runs/{run_id}", {
+                    "generated_files": written,
+                    "commit_hash": commit,
+                    "tools_used": ["maven"],
+                })
+                return CoderResult(run_id=run_id, generated_files=written,
+                                   commit_hash=commit,
+                                   verification_pending=True)
+
             # Use Maven tests instead of pytest
             passed, output = run_maven_tests(self.workspace)
 
@@ -179,7 +196,7 @@ class SpringBootCoderAgent(CoderAgent):
             sec_ok, sec_findings = security_scan(files)
             written = sorted(set(written))
 
-            # Git commit with provenance — P5: stage only this run's files.
+            # Git commit with provenance â€” P5: stage only this run's files.
             commit = self._commit(run_id, spec_id, written)
 
             # Create MRP
@@ -197,7 +214,7 @@ class SpringBootCoderAgent(CoderAgent):
                 "affected_modules": ["src/main/java/com/example/todo"],
             })
 
-            # Raise CRP if open questions — BEFORE the terminal patch
+            # Raise CRP if open questions â€” BEFORE the terminal patch
             # (POST /crps flips the run to 'blocked' server-side; a
             # terminal run can no longer be patched, so this must come
             # first. Same ordering rule as the Python coder agent.)
@@ -205,7 +222,7 @@ class SpringBootCoderAgent(CoderAgent):
             if questions:
                 crp_id = self._raise_crp(spec_id, run_id, questions)
 
-            # Terminal state decision (§3.7.8: exactly ONE terminal patch)
+            # Terminal state decision (Â§3.7.8: exactly ONE terminal patch)
             final_status = ("blocked" if questions
                             else "completed" if passed else "failed")
             self.engine.patch(f"/agent-runs/{run_id}", {
@@ -217,7 +234,6 @@ class SpringBootCoderAgent(CoderAgent):
                 "mrp_id": mrp["id"],
             })
 
-            from agents.coder_agent import CoderResult
             return CoderResult(
                 run_id=run_id,
                 mrp_id=mrp["id"],
@@ -302,7 +318,7 @@ if __name__ == "__main__":
         print(f"  CRP raised: {result.crp_id}")
     print(f"  MRP: {result.mrp_id}")
     
-    # Record CI evidence (P3: token only from env — server fail-closes
+    # Record CI evidence (P3: token only from env â€” server fail-closes
     # when SASE_CI_TOKEN is unset on the deployment).
     ci = EngineClient(base_url, ROLES["test_runner"],
                       ci_token=os.environ.get("SASE_CI_TOKEN"))

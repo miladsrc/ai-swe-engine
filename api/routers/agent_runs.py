@@ -119,9 +119,11 @@ def update_agent_run(run_id: str, payload: schemas.AgentRunUpdate, db: Session =
 
     # Terminal-state machine (§3.7.8): unknown statuses rejected 422; runs
     # already completed/failed/blocked are immutable provenance — 409.
-    assert_run_patchable(run.status, payload.status)
-
-    run.status = payload.status
+    # Phase 2 SoD: status is OPTIONAL — proposal-only metadata patches
+    # leave the run in 'running' for the orchestrator to terminate later.
+    if payload.status is not None:
+        assert_run_patchable(run.status, payload.status)
+        run.status = payload.status
     if payload.reflection_iterations is not None:
         run.reflection_iterations = payload.reflection_iterations
     if payload.tools_used is not None:

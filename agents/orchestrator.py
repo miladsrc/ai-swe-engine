@@ -104,10 +104,15 @@ def _run_code_phase(base_url: str, use_ollama: bool | None,
                     spec_id: str | None) -> None:
     """
     Gate 1 must already be open (spec human-validated — the server
-    rejects the agent-run otherwise). Coder writes real files into the
-    workspace repo, pytest decides pass/fail, CI identity records
-    evidence; everything after that is human gates.
+    rejects the agent-run otherwise).
+
+    Two modes (Phase 2 SoD, SASE_SOD_MODE):
+      legacy (default) — coder runs its own tests/scan; unchanged flow.
+      strict           — coder is PROPOSAL-ONLY; the orchestrator owns
+                         verification via agents/verification.py and binds
+                         evidence to the committed tree hash.
     """
+    sod_mode = os.environ.get("SASE_SOD_MODE", "legacy")
     from agents.coder_agent import CoderAgent, record_ci_evidence
 
     if spec_id is None:
@@ -122,9 +127,16 @@ def _run_code_phase(base_url: str, use_ollama: bool | None,
         _backend(ROLES["coder"].model, use_ollama),
         workspace=WORKSPACE,
         max_repairs=int(os.environ.get("CODER_MAX_REPAIRS", "5")))
-    print(f"[coder] implementing {spec_id} -> {WORKSPACE}")
+    print(f"[coder] implementing {spec_id} -> {WORKSPACE} "
+          f"(sod_mode={sod_mode})")
     state = json.loads(STATE_FILE.read_text(encoding="utf-8")) \
         if STATE_FILE.exists() else {}
+
+    if sod_mode == "strict":
+        _run_code_phase_strict(coder, base_url, spec_id, state,
+                               use_ollama)
+        return
+
     result = coder.implement_spec(
         spec_id, prd_id=state.get("prd_id"),
         user_story_id=state.get("user_story_id"))
@@ -148,15 +160,145 @@ def _run_code_phase(base_url: str, use_ollama: bool | None,
                            "lint_output": (result.lint_output or "")[-4000:],
                            "generated_files": result.generated_files,
                            "reflection_iterations": result.reflection_iterations,
+                           "runner": "coder-process",
+                           "sod_mode": "legacy",
                        })
-    print(f"[ci] evidence recorded on {result.mrp_id}")
+    print(f"[ci] evidence recorded on {result.mrp_id} (runner=coder-process)")
 
+    _print_human_gate_instructions(base_url, result.crp_id, result.mrp_id)
+
+
+def _run_code_phase_strict(coder, base_url: str, spec_id: str,
+                           state: dict, use_ollama) -> None:
+    """
+    Phase 2 SoD strict flow (docs/PHASES/PHASE-2.md steps A-H):
+    proposal -> snapshot -> independent verification -> evidence with
+    runner=orchestrator + tree_hash -> MRP -> terminal patch -> CRP.
+    """
+    from agents import verification as V
+    from agents.coder_agent import (CoderResult, extract_open_questions,
+                                    record_ci_evidence)
+
+    result = coder.implement_spec(spec_id, prd_id=state.get("prd_id"),
+                                  user_story_id=state.get("user_story_id"),
+                                  propose_only=True)
+    print(f"[coder] PROPOSAL ONLY: run {result.run_id}, commit "
+          f"{(result.commit_hash or '?')[:8]}, files={result.generated_files}")
+
+    pkg_state = dict(state)
+    pkg_state.setdefault("project_id", coder.project_id)
+    pkg_state["base_url"] = base_url
+    result, crp_id, tree = _sod_verify_and_package(
+        coder.engine, WORKSPACE, spec_id, result, pkg_state)
+    _print_human_gate_instructions(base_url, crp_id, result.mrp_id)
+
+
+def _sod_verify_and_package(coder_engine, workspace: Path, spec_id: str,
+                            result, state: dict):
+    """
+    Orchestrator-owned verification + packaging (SoD steps B-H), shared by
+    the CLI strict flow AND the validation demo script — one code path, so
+    the demo validates the real machinery. Verifies the proposal against
+    its bound tree hash, records orchestrator-owned evidence, creates the
+    MRP, raises CRP if needed, and applies the single terminal patch.
+    Returns (result, crp_id, tree_hash).
+    """
+    from agents import verification as V
+    from agents.coder_agent import extract_open_questions, record_ci_evidence
+
+    tree = V.tree_hash(workspace)
+    print(f"[verify] bound tree hash: {tree[:12]}…")
+
+    tests = V.run_tests_step(workspace, expected_tree=tree,
+                             command=state.get("test_command"))
+    print(f"[verify] test_execution: {'PASS' if tests.passed else 'FAIL'}")
+    # Scan + lint over a clean checkout of the SAME bound bytes.
+    with V.clean_checkout(workspace, V.head_commit(workspace)) as checkout:
+        scan = V.run_scan_step(checkout, expected_tree=tree)
+        lint = V.run_lint_step(checkout)
+    print(f"[verify] security_scan: {'PASS' if scan.passed else 'FAIL'}; "
+          f"lint: {'PASS' if lint.passed else 'FAIL'}")
+
+    spec = coder_engine.get(f"/specs/{spec_id}")
+    questions = extract_open_questions(spec["body_ref"])
+
+    spec_name = "-".join(spec_id.split("-")[2:]).lower() or "impl"
+    from agents.coder_agent import _pseudo_pr_number as _prn
+    mrp = coder_engine.post("/mrps", {
+        "project_id": state["project_id"],
+        "pull_request_number": _prn(spec_id, result.run_id),
+        "branch_name": f"agent/{spec_name}-{result.run_id.lower()[-6:]}",
+        "created_by_agent_run": result.run_id,
+        "prd_id": state.get("prd_id"),
+        "user_story_ids": [spec["user_story_id"]] if spec.get("user_story_id") else [],
+        "spec_ids": [spec_id],
+        "blueprint_id": state.get("blueprint_id", "BP-PYTHON-CLI-001"),
+        "blueprint_version": state.get("blueprint_version", "v1.0"),
+        "change_summary": f"Implement {spec_id} per validated spec "
+                          f"(agent run {result.run_id}, SoD strict).",
+        "affected_modules": result.generated_files,
+    })
+    result.mrp_id = mrp["id"]
+
+    # Evidence: LLM-free CI identity records ORCHESTRATOR-run results,
+    # bound to the immutable tree hash (G7 data).
+    ci = EngineClient(state["base_url"], ROLES["test_runner"],
+                      ci_token=os.environ.get("SASE_CI_TOKEN"))
+    record_ci_evidence(ci, result.mrp_id, tests.passed, scan.passed,
+                       lint.passed,
+                       execution_context={
+                           "runner": "orchestrator",
+                           "provenance": "tool",
+                           "sod_mode": "strict",
+                           "tree_hash": tree,
+                           "test_output": tests.output[-8000:],
+                           "security_findings": [
+                               l for l in scan.output.splitlines() if l][:20],
+                           "lint_output": lint.output[-4000:],
+                           "generated_files": result.generated_files,
+                       })
+
+    # CRP BEFORE the single terminal patch (terminal runs are immutable).
+    crp_id = None
+    if questions:
+        crp_id = coder_engine.post("/crps", {
+            "project_id": state["project_id"],
+            "domain": spec_id.split("-")[1] if "-" in spec_id else "TODO",
+            "agent_run_id": result.run_id,
+            "spec_id": spec_id,
+            "severity": "high",
+            "blocking_issue_title":
+                f"Spec {spec_id} carries unresolved open questions",
+            "blocking_issue_body": "See spec open_questions.",
+            "required_decision": "Answer each open question.",
+            "required_role": "Product Owner",
+        })["id"]
+
+    final_status = ("blocked" if questions else
+                    "completed" if (tests.passed and scan.passed
+                                    and lint.passed) else "failed")
+    coder_engine.patch(f"/agent-runs/{result.run_id}", {
+        "status": final_status,
+        "commit_hash": result.commit_hash,
+        "mrp_id": result.mrp_id,
+        "tools_used": ["ollama:local", "pytest",
+                       "verification:orchestrator"],
+        "reflection_iterations": 0,
+    })
+    result.tests_passed = tests.passed
+    result.security_passed = scan.passed
+    result.lint_passed = lint.passed
+    return result, crp_id, tree
+
+
+def _print_human_gate_instructions(base_url: str, crp_id: str | None,
+                                   mrp_id: str) -> None:
     print("\n=== HUMAN GATES (§3.6.3 / §5.6) ===")
     _print_human_auth_hint()
-    if result.crp_id:
+    if crp_id:
         vcr_body = json.dumps({
             "related_artifact_type": "CRP",
-            "related_artifact_id": result.crp_id,
+            "related_artifact_id": crp_id,
             "decision_status": "approved_with_changes",
             "rationale": "<your decision>",
         })
@@ -167,7 +309,7 @@ def _run_code_phase(base_url: str, use_ollama: bool | None,
         print("2. Then approve the merge:")
     else:
         print("1. Approve the merge:")
-    print(f"  curl -X POST {base_url}/mrps/{result.mrp_id}/human-decision \\\n"
+    print(f"  curl -X POST {base_url}/mrps/{mrp_id}/human-decision \\\n"
           f"    -H 'Content-Type: application/json' \\\n"
           f"    {human_curl_auth()} -d '{{\"decision\": \"approved\"}}'")
 

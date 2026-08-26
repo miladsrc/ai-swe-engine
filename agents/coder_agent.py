@@ -63,6 +63,9 @@ class CoderResult:
     lint_passed: bool = True
     lint_output: str = ""
     reflection_iterations: int = 0
+    # Phase 2 SoD: True when this result stops at PROPOSAL (generation +
+    # commit); verification is then owned by the orchestrator.
+    verification_pending: bool = False
 
 
 class CoderAgent:
@@ -78,7 +81,14 @@ class CoderAgent:
     # ------------------------------------------------------------------ main
 
     def implement_spec(self, spec_id: str, prd_id: str | None = None,
-                       user_story_id: str | None = None) -> CoderResult:
+                       user_story_id: str | None = None,
+                       propose_only: bool = False) -> CoderResult:
+        """
+        propose_only=True (Phase 2 SoD strict mode): the coder is
+        PROPOSAL-ONLY — it generates files, writes and commits them, then
+        STOPS. No test execution, no security scan, no MRP: verification
+        and packaging are owned by the orchestrator via agents/verification.py.
+        """
         spec = self.engine.get(f"/specs/{spec_id}")
         spec_yaml = spec["body_ref"]
         questions = extract_open_questions(spec_yaml)
@@ -104,6 +114,20 @@ class CoderAgent:
             if not files:
                 raise RuntimeError("LLM produced no parsable FILE blocks")
             written: list[str] = list(self._write_files(files))
+
+            if propose_only:
+                # SoD boundary: proposal stops here. The orchestrator's
+                # verification steps own everything after the commit.
+                written = sorted(set(written))
+                commit = self._commit(run_id, spec_id, written)
+                self.engine.patch(f"/agent-runs/{run_id}", {
+                    "generated_files": written,
+                    "commit_hash": commit,
+                    "tools_used": ["ollama:local"],
+                })
+                return CoderResult(run_id=run_id, generated_files=written,
+                                   commit_hash=commit,
+                                   verification_pending=True)
 
             passed, output = run_tests(self.workspace)
 
@@ -223,6 +247,11 @@ class CoderAgent:
             return subprocess.run(["git", *args], cwd=self.workspace,
                                   capture_output=True, text=True, check=True
                                   ).stdout.strip()
+
+        def _git(*args: str) -> str:
+            return subprocess.run(["git", *args], cwd=self.workspace,
+                                  capture_output=True, text=True
+                                  ).stdout.strip()
         # P5: stage only this run's generated files. A missing/empty list
         # falls back to `add -A` for backward compatibility with callers
         # that don't track paths (e.g. the Spring Boot __main__ script).
@@ -230,8 +259,10 @@ class CoderAgent:
             git("add", "--", *paths)
         else:
             git("add", "-A")
-        if not git("status", "--porcelain"):
-            return git("rev-parse", "HEAD")  # nothing new; reuse HEAD
+        # Only commit if something is actually STAGED (porcelain would also
+        # report unrelated untracked noise like pytest.ini).
+        if not _git("diff", "--cached", "--name-only"):
+            return _git("rev-parse", "HEAD")  # nothing new; reuse HEAD
         git("commit", "-m",
             f"agent:coder implement {spec_id} (engine run {run_id})")
         return git("rev-parse", "HEAD")

@@ -90,7 +90,9 @@ class AgentRunCreate(BaseModel):
 
 
 class AgentRunUpdate(BaseModel):
-    status: str
+    # Phase 2 SoD: optional — proposal-only runs patch metadata while still
+    # 'running'; the orchestrator applies the single terminal status later.
+    status: Optional[str] = None
     reflection_iterations: Optional[int] = None
     tools_used: Optional[List[str]] = None
     generated_files: Optional[List[str]] = None
