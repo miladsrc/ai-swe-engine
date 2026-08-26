@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-08-26
+
+### Added (hardening batch P1–P8 — evolutionary, no architecture change)
+- P1: `agents/llm.py` — Ollama host/model from env (`SASE_OLLAMA_HOST`, `SASE_OLLAMA_MODEL`); bounded retry with linear backoff for transient failures (URLError/5xx only; 4xx fails fast)
+- P2: AgentRun provenance fields populated (`model_version`, `prompt_id`, `prompt_version`, `system_prompt_hash`) — existing columns, previously dead
+- P3: secret hygiene — CI token fail-closed when `SASE_CI_TOKEN` unset (503), no hardcoded fallback, constant-time comparisons (evidence gate + perimeter middleware)
+- P4: orphan-run reaper at API startup — stale 'running' runs marked failed by system actor `orphan-reaper`, audited (`SASE_ORPHAN_RUN_HOURS`, default 24h)
+- P5: coder agents stage only files they wrote (no more `git add -A`); security scan is language-aware (JVM patterns for .java/.kt/.scala)
+- P7: raw execution evidence (full test output, scan findings, lint output) persisted into audit context via `MRPEvidenceUpdate.execution_context`
+- P8: blueprint create/update audited via existing append-only mechanism
+- docs/P6_A_PLAN_BEFORE_WRITE_DESIGN.md: plan-before-write design (Phase A passive / Phase B enforcing — Phase B NOT approved yet)
+
+### Fixed
+- coder_springboot lifecycle ordering: terminal patch moved AFTER MRP/CRP (was 409-prone); guarded failure patch
+
+### Tests
+- tests/test_hardening_batch.py: 17 new DB-free unit tests (79 unit total, plus live E2E green)
+
+---
+
 ## 2026-08-25
 
 ### Added

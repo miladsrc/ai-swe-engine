@@ -272,6 +272,37 @@ auditable, but anyone with network reach to port 8000 can set the header.
 Production authn (OIDC / mTLS) plugs in exactly at `require_human_actor`.
 See Risk Register B2.
 
+### Hardening additions (2026-08-26 batch — P1–P8, evolutionary)
+
+- **CI evidence fail-closed (P3):** `require_ci_actor` returns **503 when
+  `SASE_CI_TOKEN` is unset** — an unconfigured deployment can no longer
+  accept machine evidence silently. Token comparison is constant-time
+  (`hmac.compare_digest`), as is the perimeter middleware's. No hardcoded
+  fallback tokens exist anywhere; docker-compose supplies a dev value.
+- **LLM transport (P1):** Ollama host/model come from env
+  (`SASE_OLLAMA_HOST`, `SASE_OLLAMA_MODEL`, defaults unchanged);
+  transient failures (URLError / HTTP 5xx) retry up to 2× with linear
+  backoff; HTTP 4xx fails immediately. The LLM abstraction is unchanged.
+- **AgentRun provenance (P2):** runs now record `model_version`,
+  `prompt_id`, `prompt_version`, `system_prompt_hash` (sha256 prefix of
+  the exact system prompt) — previously dead columns, no schema change.
+- **Orphan-run reaper (P4):** on API startup, runs still `running` older
+  than `SASE_ORPHAN_RUN_HOURS` (default 24h) are marked `failed` by the
+  system actor `orphan-reaper` with an audit entry, reusing the existing
+  terminal-transition + audit machinery. Non-fatal on error.
+- **Tool safety (P5):** coder agents stage only the files they wrote
+  (no `git add -A`); security scan dispatches JVM patterns for
+  `.java/.kt/.scala` files instead of scanning them with Python rules.
+- **Evidence persistence (P7):** `MRPEvidenceUpdate.execution_context`
+  carries full test output (last 8k chars), scan findings, lint output,
+  and run metadata into the append-only audit context — statuses stay on
+  MRP columns, raw evidence lives in audit JSONB. No new evidence system.
+- **Blueprint audit (P8):** blueprint create/update are audited like every
+  other mutating endpoint (blueprint version is merge-gating evidence).
+- Plan-before-write is designed but NOT implemented:
+  `docs/P6_A_PLAN_BEFORE_WRITE_DESIGN.md` (Phase B enforcement requires
+  separate approval).
+
 ---
 
 ## 8. Audit & Traceability
@@ -316,8 +347,13 @@ docker compose up --build     # postgres:16 + api (first boot applies migrations
 | Setting | Value | Source |
 |---|---|---|
 | `DATABASE_URL` | `postgresql+psycopg2://sase:sase@localhost:5432/sase` (default) | env var, `database.py` |
+| `SASE_CI_TOKEN` | unset → evidence endpoints **503 fail-closed**; compose sets dev value | env var, `security.py` |
+| `SASE_API_TOKEN` | unset = perimeter open; set → all requests need `X-API-Token` | env var, `main.py` |
+| `SASE_OLLAMA_HOST` / `SASE_OLLAMA_MODEL` | `http://localhost:11434` / `qwen2.5-coder:7b` | agent layer LLM transport (P1) |
+| `SASE_MODEL_VERSION` | unset | optional AgentRun provenance tag (P2) |
+| `SASE_ORPHAN_RUN_HOURS` | `24` | startup reaper threshold for stale 'running' runs (P4) |
 | Compose DB creds | sase/sase/sase | docker-compose.yml |
-| Ports | host 5432 (postgres), 8000 (api) | docker-compose.yml |
+| Ports | host 5433→5432 (postgres), 8000 (api) | docker-compose.yml |
 | Commented services | redis:7 (:6379), qdrant (:6333), ollama (:11434) | phases 4–6 |
 
 Air-gap note (compose comment): Ollama container must not be exposed beyond the
@@ -329,15 +365,19 @@ internal compose network in air-gapped deployments.
 
 | Suite | Needs live stack? | Status |
 |---|---|---|
-| `tests/test_gates_unit.py` (14 tests) | No — fakes for DB/session | ✅ 14/14 pass |
+| `tests/test_gates_unit.py` | No — fakes for DB/session | ✅ pass |
+| `tests/test_agents_unit.py`, `tests/test_coder_unit.py` | No — pure functions/fakes | ✅ pass |
+| `tests/test_hardening_batch.py` (17 tests, 2026-08-26 batch) | No — retry/reaper/scan/provenance units | ✅ pass |
 | `tests/test_traceability_chain.py` (E2E chain walk) | Yes — asserts both gates return 409, resolves CRP, verifies `fully_traceable` | ⏸ auto-skips until `docker compose up` |
 
-Unit coverage: MRP readiness matrix (all blocking reasons, NA/missing integration
-tolerance, rejection), CRP gate block/pass/short-circuit, agent-run existence gate,
-identity guard (missing header 401; `agent:`, `system`, `HUMAN:x`, bare `human` all
-rejected 403; valid humans pass).
+Full DB-free run: `<venv-python> -m pytest tests --ignore=tests/test_traceability_chain.py`
+(79 passed as of the 2026-08-26 hardening batch; E2E verified separately
+against the live compose stack).
 
-Run: `<venv-python> -m pytest tests/test_gates_unit.py -v` from project root.
+Unit coverage: MRP readiness matrix, CRP gates, agent-run terminal state machine,
+identity guards incl. CI fail-closed behavior, perimeter middleware, LLM retry
+backoff semantics (transient vs 4xx), orphan-reaper transition + audit,
+language-aware security scan, surgical-staging contracts, evidence context pass-through.
 
 ---
 

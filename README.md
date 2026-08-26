@@ -255,7 +255,11 @@ curl localhost:8000/traceability/chain/MRP-PR-1
 |----------|---------|---------|
 | `DATABASE_URL` | `postgresql+psycopg2://sase:sase@postgres:5432/sase` | Postgres connection (docker-compose sets this) |
 | `SASE_API_TOKEN` | _(unset)_ | Optional perimeter auth. When set, every request needs `X-API-Token` header |
-| `SASE_CI_TOKEN` | `dev-ci-token-change-me` | Shared secret for CI evidence identity. Replace for any non-localhost deployment |
+| `SASE_CI_TOKEN` | **_(required for evidence)_** | Shared secret for CI evidence identity. Evidence endpoints FAIL CLOSED (HTTP 503) when unset — docker-compose provides the dev value `dev-ci-token-change-me` |
+| `SASE_OLLAMA_HOST` | `http://localhost:11434` | Ollama endpoint used by the agent layer (P1) |
+| `SASE_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Default local model when a role doesn't specify one (P1) |
+| `SASE_MODEL_VERSION` | _(unset)_ | Optional version tag recorded in AgentRun provenance (P2) |
+| `SASE_ORPHAN_RUN_HOURS` | `24` | Runs still 'running' after this many hours are reaped to 'failed' at API startup (P4) |
 | `TODO_STORE` | `todos.json` | Data file path for todo-cli (agent test override: `TODO_STORE=/tmp/test.json`) |
 | `CODER_MAX_REPAIRS` | `5` | Max reflection loop iterations before marking run as failed |
 
