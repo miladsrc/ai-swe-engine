@@ -2,6 +2,21 @@
 
 ---
 
+## 2026-08-26 (Phase 2 start: human identity)
+
+### Added
+- migration 003_users.sql: users + api_tokens tables (additive; manual apply for existing volumes)
+- api/authn.py: PBKDF2 password hashing, sha256-stored bearer tokens (stdlib only)
+- api/routers/auth.py: POST /auth/login (audited), GET /auth/me
+- api/security.py: require_human_actor accepts Authorization Bearer as AUTHORITATIVE identity; SASE_REQUIRE_HUMAN_TOKEN fail-closed mode (default off — legacy header path preserved)
+- scripts/create_user.py bootstrap (getpass or SASE_USER_PASSWORD)
+- tests/test_auth_unit.py: 21 DB-free tests (100 total green)
+
+### Deliberately deferred
+- Rate limiting, refresh tokens, OIDC/mTLS, password reset
+
+---
+
 ## 2026-08-26
 
 ### Added (hardening batch P1–P8 — evolutionary, no architecture change)

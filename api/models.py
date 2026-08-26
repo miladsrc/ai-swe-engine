@@ -205,3 +205,34 @@ class AuditLog(Base):
     result = Column(String)
     human_decision = Column(String)
     timestamp = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: human identity (users + API tokens).
+# Adds REAL authn at the seam api/security.py documented ("this header
+# contract is the seam where that plugs in"). Agents are unaffected: no
+# agent role can register or log in — these tables are human-only by
+# construction (login requires a password check, tokens are issued only
+# through it). Default behavior of every endpoint is unchanged until
+# SASE_REQUIRE_HUMAN_TOKEN is set.
+# ---------------------------------------------------------------------------
+
+class User(Base):
+    __tablename__ = "users"
+    username = Column(String, primary_key=True)     # canonical, lowercased
+    display_name = Column(String)
+    # pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex> — stdlib only.
+    password_hash = Column(String, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class ApiToken(Base):
+    __tablename__ = "api_tokens"
+    # sha256(token) — the RAW token is shown once at login and never stored.
+    token_hash = Column(String, primary_key=True)
+    username = Column(String, ForeignKey("users.username"), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    expires_at = Column(TIMESTAMP(timezone=True))
+    revoked = Column(Boolean, nullable=False, default=False)
+    last_used_at = Column(TIMESTAMP(timezone=True))

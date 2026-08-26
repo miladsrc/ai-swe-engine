@@ -260,8 +260,36 @@ curl localhost:8000/traceability/chain/MRP-PR-1
 | `SASE_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Default local model when a role doesn't specify one (P1) |
 | `SASE_MODEL_VERSION` | _(unset)_ | Optional version tag recorded in AgentRun provenance (P2) |
 | `SASE_ORPHAN_RUN_HOURS` | `24` | Runs still 'running' after this many hours are reaped to 'failed' at API startup (P4) |
+| `SASE_REQUIRE_HUMAN_TOKEN` | _(unset)_ | Phase 2: when set, human gates reject `X-Acting-As` and REQUIRE a bearer token from `POST /auth/login`. Unset = legacy header path still open |
+| `SASE_TOKEN_TTL_HOURS` | `72` | Lifetime of issued login tokens (`0` = no expiry) |
 | `TODO_STORE` | `todos.json` | Data file path for todo-cli (agent test override: `TODO_STORE=/tmp/test.json`) |
 | `CODER_MAX_REPAIRS` | `5` | Max reflection loop iterations before marking run as failed |
+
+## Human authentication (Phase 2)
+
+```bash
+# 1. Apply the migration (existing volumes only; fresh volumes get it via initdb.d):
+docker exec -i ai-swe-engine-postgres-1 psql -U sase -d sase < migrations/003_users.sql
+
+# 2. Create a user (prompts for password; or set SASE_USER_PASSWORD for scripted runs):
+.venv/bin/python scripts/create_user.py m.barani "Milad Barani"    # (Windows: python scripts\create_user.py ...)
+
+# 3. Log in — the token is shown ONCE:
+curl -X POST localhost:8000/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"m.barani","password":"..."}'
+
+# 4. Use it on any human gate instead of / alongside X-Acting-As:
+curl -X POST localhost:8000/specs/<id>/validate \
+  -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' -d '{}'
+```
+
+- Token identity is **authoritative**: when a valid bearer is presented, any
+  `X-Acting-As` header value is ignored — a logged-in human cannot be
+  impersonated via headers.
+- Only `sha256(token)` is stored; passwords use PBKDF2-HMAC-SHA256 (200k iters).
+- Every login attempt is audited (`login_success` / `login_failed`).
+- Until `SASE_REQUIRE_HUMAN_TOKEN` is set, the legacy `X-Acting-As` path keeps
+  working for local dev and existing agent tooling.
 
 ## Project structure
 

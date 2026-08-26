@@ -29,7 +29,11 @@ well-formed actor kind.
 import hmac
 import os
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
+from sqlalchemy.orm import Session
+
+from api import authn
+from api.database import get_db
 
 HUMAN_PREFIX = "human:"
 CI_PREFIXES = ("ci:", "system:")
@@ -38,11 +42,47 @@ ANY_PREFIXES = ("human:", "agent:", "ci:", "system:")
 
 def require_human_actor(
     x_acting_as: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
 ) -> str:
     """
     FastAPI dependency. Returns the verified human actor id
     (e.g. 'human:m.barani') or raises.
+
+    Phase 2 — real authn at the documented seam, additive:
+
+    1. Authorization: Bearer <token> present -> resolved against the
+       api_tokens/users tables; a valid token yields the AUTHORITATIVE
+       identity 'human:<username>' (any X-Acting-As header is ignored —
+       a logged-in human cannot be impersonated by header values).
+       Invalid/expired/revoked tokens are rejected 401.
+    2. No bearer token -> legacy X-Acting-As prefix check as before.
+    3. SASE_REQUIRE_HUMAN_TOKEN set (non-empty) -> path 2 is closed:
+       humans MUST authenticate with a token (fail-closed, P3 style).
+
+    Agents are structurally unaffected: no agent can obtain a token.
     """
+    # isinstance guards: when called directly (unit tests) rather than via
+    # FastAPI DI, Header()/Depends() sentinels arrive as defaults.
+    has_bearer = isinstance(authorization, str) and authorization
+    if has_bearer:
+        username = authn.resolve_bearer(db, authorization)
+        if username is None:
+            raise HTTPException(
+                401,
+                "Invalid or expired bearer token. Log in again via "
+                "POST /auth/login.",
+            )
+        return f"{HUMAN_PREFIX}{username}"
+
+    if os.environ.get("SASE_REQUIRE_HUMAN_TOKEN", ""):
+        raise HTTPException(
+            401,
+            "This deployment requires human authentication "
+            "(SASE_REQUIRE_HUMAN_TOKEN). Send 'Authorization: Bearer <token>' "
+            "obtained from POST /auth/login.",
+        )
+
     if not x_acting_as:
         raise HTTPException(
             401,

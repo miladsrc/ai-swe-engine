@@ -202,3 +202,24 @@ class BlueprintOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ---------------------------------------------------- Phase 2: auth ----
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=256)
+
+
+class LoginResponse(BaseModel):
+    # Raw bearer token — shown exactly once, never stored server-side.
+    token: str
+    token_type: str = "bearer"
+    expires_at: Optional[datetime] = None
+    username: str
+
+
+class MeResponse(BaseModel):
+    username: str
+    display_name: Optional[str] = None
+    actor_id: str

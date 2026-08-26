@@ -303,6 +303,30 @@ See Risk Register B2.
   `docs/P6_A_PLAN_BEFORE_WRITE_DESIGN.md` (Phase B enforcement requires
   separate approval).
 
+### Phase 2: human identity (2026-08-26, additive)
+
+Real authn now plugs into the exact seam `require_human_actor` documented:
+
+- **Tables (migration 003):** `users` (username PK, PBKDF2 password hash,
+  is_active) and `api_tokens` (sha256 of raw token as PK — raw shown once,
+  never stored; expiry + revocation + last_used_at).
+- **Endpoints:** `POST /auth/login` → bearer token (audited
+  success/failure, timing-equalized against unknown users);
+  `GET /auth/me` → introspection.
+- **`require_human_actor` decision order:** (1) valid
+  `Authorization: Bearer` → authoritative `human:<username>` identity,
+  any X-Acting-As value ignored; (2) invalid/expired/revoked bearer → 401;
+  (3) no bearer + `SASE_REQUIRE_HUMAN_TOKEN` set → 401 fail-closed;
+  (4) otherwise legacy X-Acting-As prefix check (default, unchanged).
+- **Crypto:** stdlib only — PBKDF2-HMAC-SHA256 (200k iterations,
+  salted), `secrets.token_hex(32)`, constant-time comparisons.
+- **Bootstrap:** `scripts/create_user.py` (interactive getpass or
+  `SASE_USER_PASSWORD` for scripted runs).
+- **Agents unaffected:** tokens are issued only after a password check;
+  no agent role has or can obtain credentials.
+- Not implemented (awaiting approval): rate limiting, refresh tokens,
+  OIDC/mTLS, password reset.
+
 ---
 
 ## 8. Audit & Traceability
