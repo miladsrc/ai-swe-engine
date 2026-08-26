@@ -8,6 +8,7 @@ future work) becomes a CRP/audit event rather than a silent bypass.
 """
 
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -18,14 +19,50 @@ class PolicyViolation(PermissionError):
     """A role tried to use an endpoint outside its mandate."""
 
 
+# ------------------------------------------------- human auth helpers ----
+# Phase 2 token-flow migration (M1/M2/M3): additive only. Agents NEVER use
+# these — they act under agent:/ci: identities on non-human endpoints.
+# These exist for humans/tools that call HUMAN gates (spec validate,
+# MRP human-decision, VCR) so printed instructions and scripted calls can
+# move to bearer tokens before SASE_REQUIRE_HUMAN_TOKEN is enabled.
+
+def human_curl_auth(name: str | None = None) -> str:
+    """
+    curl header fragment for human gates. Prefers the token flow when
+    SASE_HUMAN_TOKEN is set; falls back to the legacy X-Acting-As header
+    (still valid while SASE_REQUIRE_HUMAN_TOKEN is unset).
+    """
+    token = os.environ.get("SASE_HUMAN_TOKEN")
+    if token:
+        return f"-H 'Authorization: Bearer {token}'"
+    who = name or os.environ.get("SASE_HUMAN_NAME", "m.barani")
+    return f"-H 'X-Acting-As: human:{who}'"
+
+
+def print_human_auth_hint(base_url: str = "http://localhost:8000") -> None:
+    """Printed alongside gate instructions so humans know both paths."""
+    print("Human identity options:\n"
+          "  a) Token flow (required once SASE_REQUIRE_HUMAN_TOKEN=1):\n"
+          f"     curl -X POST {base_url}/auth/login \\\n"
+          "       -H 'Content-Type: application/json' \\\n"
+          "       -d '{\"username\":\"<you>\",\"password\":\"...\"}'\n"
+          "     -> then send: -H 'Authorization: Bearer <token>'\n"
+          "  b) Legacy header (works until the flag flips):\n"
+          "     -H 'X-Acting-As: human:<name>'")
+
+
 class EngineClient:
     def __init__(self, base_url: str = "http://localhost:8000",
                  role: RolePolicy | None = None,
                  ci_token: str | None = None,
+                 bearer_token: str | None = None,
                  timeout: int = 15):
         self.base_url = base_url.rstrip("/")
         self.role = role
         self.ci_token = ci_token
+        # Phase 2 (M3): optional bearer for HUMAN-gate calls made through
+        # an unbound client (scripts/tooling). Role-bound agents ignore it.
+        self.bearer_token = bearer_token or os.environ.get("SASE_HUMAN_TOKEN")
         self.timeout = timeout
 
     # -- policy ---------------------------------------------------------
@@ -57,6 +94,8 @@ class EngineClient:
             h["X-Acting-As"] = self.role.identity
         if self.ci_token:
             h["X-CI-Token"] = self.ci_token
+        if self.bearer_token:
+            h["Authorization"] = f"Bearer {self.bearer_token}"
         if extra:
             h.update(extra)
         return h

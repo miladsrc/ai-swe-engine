@@ -189,7 +189,7 @@ Actor convention everywhere: `human:<name>` vs `agent:<role>` prefixes.
 ## 6. API Reference
 
 Base URL `http://localhost:8000` · Interactive docs at `/docs`.
-🔒 = requires `X-Acting-As: human:<name>` header (401 if missing, 403 if not human).
+🔒 = human gate: requires `Authorization: Bearer <token>` (Phase 2 — authoritative) or legacy `X-Acting-As: human:<name>` until `SASE_REQUIRE_HUMAN_TOKEN` is set (401 if missing, 403 if not human).
 
 ### Projects — `api/routers/projects.py`
 | Method/Path | Description |
@@ -263,14 +263,40 @@ HTTPException, "not documentation someone might skip."
 | G2 | No open High/Critical CRP may block merge (§3.6.3, §3.7.8) | MRP human-decision approval | 409 |
 | G3 | MRP readiness table (§5.6.5): unit tests passed, integration passed/NA, security scan passed, ≥1 Spec, Blueprint version present, no open CRPs, not rejected | `POST /{id}/check-ready` + approval | reasons list / 409 |
 | G4 | Generated code needs existing Agent Run (§3.7.8) | `gates.agent_run_must_exist_for_generated_code` | 409 |
-| G5 | Human-only endpoints verify actor identity starts with `human:` via `X-Acting-As` header | validate-spec, human-decision, both VCR writes | 401 / 403 |
+| G5 | Human-only endpoints verify identity via `Authorization: Bearer` (authoritative, Phase 2) or legacy `X-Acting-As: human:` prefix until `SASE_REQUIRE_HUMAN_TOKEN` is set | validate-spec, human-decision, both VCR writes | 401 / 403 |
 | G6 | High/Critical CRP blocks its referencing Agent Run (`status=blocked`) | `POST /crps` | state change |
 
-**Identity model caveat:** `X-Acting-As` is a transport-level contract seam.
-It prevents *accidental/forgotten* identity and makes forgery explicit and
-auditable, but anyone with network reach to port 8000 can set the header.
-Production authn (OIDC / mTLS) plugs in exactly at `require_human_actor`.
-See Risk Register B2.
+**Identity model caveat (updated by Phase 2):** real authn now EXISTS —
+`POST /auth/login` issues bearer tokens and a valid token is the
+authoritative human identity at every G5 gate. The legacy `X-Acting-As`
+prefix path remains open only while `SASE_REQUIRE_HUMAN_TOKEN` is unset;
+setting that env var makes token auth mandatory (fail-closed). Agents are
+unaffected: they act under `agent:`/`ci:` identities on non-human
+endpoints and cannot obtain tokens.
+
+### Token-flow migration status (2026-08-26 review)
+
+| Component | Status |
+|---|---|
+| Server human gates (G5) | ✅ accept Bearer (authoritative) |
+| Orchestrator printed instructions | ✅ print both flows (`human_curl_auth`) |
+| SpringBoot agent printed instructions | ✅ same |
+| EngineClient | ✅ optional `bearer_token=` + `SASE_HUMAN_TOKEN` env |
+| Agent roles (`agent:*`, `ci:*`) | N/A — no migration needed (never call human gates) |
+| Live E2E suite | ✅ **token-first** (`_human_auth`: real login when `SASE_LIVE_*` set; legacy fallback only credential-less) |
+| Gate proof trio | ✅ live test proves valid-token-passes / invalid-token-401 / spoofed-header-loses (audit-verified) |
+| Docs (README quickstart/walkthrough) | ✅ token flow shown as preferred |
+| Remaining before flag flip | owner go-ahead only (see blockers below) |
+
+**Remaining `X-Acting-As` usages after this migration:** (1) legacy fallback
+in `_human_auth` — dead code once the flag flips; (2) negative gate tests
+proving agent/anonymous identities are REJECTED (must keep); (3) historical
+change-log sections (immutable history). No positive human action anywhere
+depends on a forged identity string anymore.
+
+**Blockers before enabling `SASE_REQUIRE_HUMAN_TOKEN=1`:** none technical.
+Owner decisions: provide `SASE_LIVE_*` credentials wherever the E2E runs,
+and give explicit go-ahead.
 
 ### Hardening additions (2026-08-26 batch — P1–P8, evolutionary)
 

@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 from agents.config import ROLES
-from agents.engine_client import EngineClient
+from agents.engine_client import EngineClient, human_curl_auth, print_human_auth_hint
 from agents.llm import TemplateLLM, pick_backend
 from agents.product_agent import ProductAgent
 from agents.spec_agent import SpecAgent
@@ -152,6 +152,7 @@ def _run_code_phase(base_url: str, use_ollama: bool | None,
     print(f"[ci] evidence recorded on {result.mrp_id}")
 
     print("\n=== HUMAN GATES (§3.6.3 / §5.6) ===")
+    _print_human_auth_hint()
     if result.crp_id:
         vcr_body = json.dumps({
             "related_artifact_type": "CRP",
@@ -162,13 +163,13 @@ def _run_code_phase(base_url: str, use_ollama: bool | None,
         print(f"1. Resolve CRP with a VCR:\n"
               f"  curl -X POST {base_url}/vcrs "
               f"-H 'Content-Type: application/json' \\\n"
-              f"    -H 'X-Acting-As: human:m.barani' -d '{vcr_body}'")
+              f"    {human_curl_auth()} -d '{vcr_body}'")
         print("2. Then approve the merge:")
     else:
         print("1. Approve the merge:")
     print(f"  curl -X POST {base_url}/mrps/{result.mrp_id}/human-decision \\\n"
           f"    -H 'Content-Type: application/json' \\\n"
-          f"    -H 'X-Acting-As: human:m.barani' -d '{{\"decision\": \"approved\"}}'")
+          f"    {human_curl_auth()} -d '{{\"decision\": \"approved\"}}'")
 
 
 def run_pipeline(project_id: str = "todo-cli", domain: str = "TODO",
@@ -225,10 +226,11 @@ def run_pipeline(project_id: str = "todo-cli", domain: str = "TODO",
 
     # 6. HUMAN GATE
     print("\n=== HUMAN GATE (§3.5) ===")
+    print_human_auth_hint(base_url)
     print(f"Review and validate with:\n"
           f"  curl -X POST {base_url}/specs/{sp['id']}/validate \\\n"
           f"    -H 'Content-Type: application/json' \\\n"
-          f"    -H 'X-Acting-As: human:m.barani' -d '{{}}'")
+          f"    {human_curl_auth()} -d '{{}}'")
     return out
 
 
@@ -250,10 +252,11 @@ def _run_spec_only(product: ProductAgent, spec: SpecAgent,
         name=spec_name, domain=domain)
     print(f"[spec] spec drafted: {sp['id']}")
     print("\n=== HUMAN GATE (§3.5) ===")
+    print_human_auth_hint("http://localhost:8000")
     print(f"Review and validate with:\n"
           f"  curl -X POST http://localhost:8000/specs/{sp['id']}/validate "
           f"-H 'Content-Type: application/json' "
-          f"-H 'X-Acting-As: human:m.barani' -d '{{}}'")
+          f"{human_curl_auth()} -d '{{}}'")
     return PipelineResult(state | {"spec_id": sp["id"]})
 
 
