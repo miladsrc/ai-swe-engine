@@ -7,9 +7,14 @@
 const API = location.origin;
 const TOKEN_KEY = "sase_token";
 const POLL_MS = 15000;
+const RUNNER = "http://127.0.0.1:8899";
+const OFFLINE_POLL_MS = 20000;
+const RUN_POLL_MS = 4000;
 
 let ME = null;          // {username, actor_id}
 let pollTimer = null;
+let runPollTimer = null;
+let offlinePollTimer = null;
 
 // ------------------------------------------------------------- api helper
 async function api(method, path, body) {
@@ -19,6 +24,20 @@ async function api(method, path, body) {
   const r = await fetch(API + path, {
     method, headers, body: body ? JSON.stringify(body) : undefined});
   if (r.status === 401 && path !== "/auth/login") { logout(); throw new Error("401"); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((data.detail || ("HTTP " + r.status)));
+  return data;
+}
+
+// ------------------------------------------------ offline runner helper
+// Talks to the LOCAL offline orchestrator at 127.0.0.1:8899 (CORS enabled).
+// Never sends the governance Bearer token; this endpoint is trusted localhost.
+async function runner(method, path, body) {
+  const r = await fetch(RUNNER + path, {
+    method,
+    headers: {"Content-Type": "application/json"},
+    body: body ? JSON.stringify(body) : undefined});
+  if (r.status === 409) throw Object.assign(new Error("409 Conflict"), {status: 409});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((data.detail || ("HTTP " + r.status)));
   return data;
@@ -39,6 +58,71 @@ function toast(msg) {
   el.textContent = msg; el.classList.remove("hidden");
   setTimeout(() => el.classList.remove("show"), 10);
   clearTimeout(el._t); el._t = setTimeout(() => el.classList.add("hidden"), 3500);
+}
+
+// ----------------------------------------------------- offline indicators
+let offlineStatus = null;   // last cached status from the runner
+
+function offlineModelsHtml(s) {
+  const m = s && s.models ? s.models : {};
+  const parts = [];
+  for (const role of ["coder", "reviewer", "critic"]) {
+    if (m[role]) parts.push(`${role[0].toUpperCase() + role.slice(1)}: ${esc(m[role])}`);
+  }
+  return parts.length ? parts.join(" · ") : "no models reported";
+}
+
+// Cache the summary separately to render immediately on re-paint.
+async function refreshOfflineStatus() {
+  let status = null, reachable = true;
+  try { status = await runner("GET", "/api/offline/status"); }
+  catch (ex) { reachable = false; status = null; }
+  offlineStatus = status;
+  renderOfflineIndicator(reachable, status);
+}
+
+function renderOfflineIndicator(reachable, s) {
+  // --- top banner ---
+  const banner = document.getElementById("offline-banner");
+  if (banner) {
+    if (!reachable) {
+      banner.className = "offline-banner gray";
+      banner.innerHTML =
+        `<span class="offline-chip gray">⛁ OFFLINE RUNNER OFFLINE</span>
+         <div class="offline-meta">Local runner at <span class="mono">${RUNNER}</span> unreachable —
+         governance views still work. Start the offline orchestrator to use Blueprint / Dev Run.</div>`;
+    } else if (s.offline) {
+      banner.className = "offline-banner green";
+      const warn = s.ollama_ok === false
+        ? `<span class="offline-chip warn">models present: no</span>` : "";
+      banner.innerHTML =
+        `<span class="offline-chip green">⛭ OFFLINE MODE ACTIVE</span>
+         <div class="offline-meta"><span class="offline-title">LLM ${esc(s.ollama_url)}</span>
+           · backend ${esc(s.backend)}${warn}</div>
+         <div class="offline-models">${Object.keys(s.models || {}).map(r =>
+           `<span class="model-chip">${esc(r)}: ${esc(s.models[r])}</span>`).join("")}</div>`;
+    } else {
+      banner.className = "offline-banner gray";
+      banner.innerHTML =
+        `<span class="offline-chip gray">⛁ OFFLINE RUNNER REACHABLE (not active)</span>
+         <div class="offline-meta">runner ok, offline mode off</div>`;
+    }
+  }
+  // --- sidebar chip ---
+  const side = document.getElementById("sidebar-offline");
+  if (side) {
+    if (!reachable) {
+      side.innerHTML = `<span class="offline-chip gray">OFFLINE RUNNER OFFLINE</span>
+        <div class="offline-meta">runner down</div>`;
+    } else if (s.offline) {
+      side.innerHTML = `<span class="offline-chip green">⛭ OFFLINE MODE ACTIVE</span>
+        <div class="offline-meta">LLM <span class="mono">${esc(s.ollama_url)}</span><br>
+        ${offlineModelsHtml(s)}</div>`;
+    } else {
+      side.innerHTML = `<span class="offline-chip gray">OFFLINE MODE OFF</span>
+        <div class="offline-meta">runner ok</div>`;
+    }
+  }
 }
 
 // ------------------------------------------------------------------- auth
@@ -67,6 +151,8 @@ async function login(e) {
 function logout() {
   sessionStorage.removeItem(TOKEN_KEY); ME = null;
   clearInterval(pollTimer);
+  clearInterval(offlinePollTimer);
+  clearInterval(runPollTimer);
   location.replace("/ui/login");                           // back to login page
 }
 
@@ -84,12 +170,16 @@ async function enterApp() {
     `${esc(ME.username)}<small>role: ${esc(role)} · ${esc(ME.actor_id)}</small>`;
   buildNav();
   route();
+  refreshOfflineStatus();                                   // mount offline indicator
   clearInterval(pollTimer);
   pollTimer = setInterval(() => { if (["dashboard","approvals"].includes(currentView)) route(); }, POLL_MS);
+  clearInterval(offlinePollTimer);
+  offlinePollTimer = setInterval(refreshOfflineStatus, OFFLINE_POLL_MS);
 }
 
 // ---------------------------------------------------------------- routing
 const NAV = [["dashboard","Dashboard"],["approvals","Pending Approvals"],
+  ["blueprint","Blueprint"],["dev","Dev Run"],
   ["runs","Agent Runs"],["projects","Projects"],["evidence","Evidence"],
   ["audit","Audit Logs"],["console","Agent Console"],["validation","SoD Validation"],
   ["settings","Settings"]];
@@ -109,9 +199,13 @@ async function route() {
   document.querySelectorAll(".nav-item").forEach(a =>
     a.classList.toggle("active", a.dataset.v === view));
   const el = document.getElementById("view");
+  // Stop any live run polling when navigating to a non-dev view.
+  if (view !== "dev") clearInterval(runPollTimer);
   try {
     if (view === "dashboard") await viewDashboard(el);
     else if (view === "approvals") await viewApprovals(el);
+    else if (view === "blueprint") viewBlueprint(el);
+    else if (view === "dev") await viewDev(el, location.hash.replace(/^#\//, "").split("/")[1] || null);
     else if (view === "runs") await viewRuns(el);
     else if (view === "projects") await viewProjects(el);
     else if (view === "evidence") await viewEvidence(el);
@@ -504,6 +598,354 @@ function viewSettings(el) {
     <div class="card"><h3>About</h3><p>SASE Governance Dashboard — a read-mostly client over
     the ai-swe-engine. The backend remains the source of truth; all decisions pass the same
     gated endpoints as before.</p></div>`;
+}
+
+// ------------------------------------------------- offline blueprint ----
+const EXAMPLE_BLUEPRINT = `# Offline Task Manager — Full-Stack Blueprint
+
+## Product requirements
+- A single-user task manager that works 100% offline (no external network calls).
+- Tasks have: title, description, status (todo/in_progress/done), priority, owner, due date, created_at.
+- Login with username + password; token-based auth; role-based permissions (admin, manager, worker).
+
+## Architecture
+- Backend: Python stdlib HTTP server (http.server) + SQLite for persistence.
+- Frontend: single-page HTML/JS/CSS served statically by the same server.
+- No external frameworks or packages — strictly Python 3 stdlib.
+- Separation: server.py (HTTP), auth.py (tokens/roles), db.py (SQLite schema+queries),
+  api.py (route handlers), static/ (frontend).
+
+## Database design
+- Table users(id PK, username UNIQUE, password_hash, role, created_at)
+- Table tasks(id PK, title, description, status, priority, owner_id FK, due_date, created_at)
+- Table sessions(token PK, user_id FK, created_at)
+- Token auth: HMAC-signed session tokens stored in the sessions table.
+
+## API requirements
+- POST /api/login {username,password} -> {token,user}
+- POST /api/logout (Bearer) -> 204
+- GET  /api/tasks (Bearer) -> list
+- POST /api/tasks {title,description,priority,due_date} (Bearer) -> task
+- PATCH /api/tasks/{id} {status,title,description,...} (Bearer)
+- DELETE /api/tasks/{id} (Bearer, admin/manager or owner)
+- GET  /api/me (Bearer) -> {user, role}
+- All protected endpoints require a valid Bearer token; 401 otherwise.
+
+## Frontend requirements
+- static/index.html: single page with login form and task dashboard.
+- Task list table with status/priority chips; add/edit/delete forms; logout button.
+- Role-gated UI: delete button only for admin/manager/owner.
+- Clean, readable CSS in static/styles.css; JS in static/app.js using fetch.
+
+## Security requirements
+- Passwords hashed with PBKDF2-HMAC-SHA256 (salt per user).
+- Role checks enforced server-side on every mutation, not just in the UI.
+- SQLite parameterized queries everywhere (no string-concatenated SQL).
+- Tokens expire after 12 hours; logout revokes.
+
+## Acceptance criteria
+- [ ] Login/logout works offline; wrong password rejected.
+- [ ] Admin can create/list/edit/delete any task and manage users.
+- [ ] Worker role cannot delete tasks they do not own.
+- [ ] All CRUD persists across server restarts (SQLite file).
+- [ ] Unit tests for auth, permissions, and task CRUD pass offline.
+- [ ] README documents how to run + test with only Python 3 stdlib.`;
+
+function viewBlueprint(el) {
+  el.innerHTML = `
+    <h1 class="page">Blueprint → Offline Development</h1>
+    <p class="sub">Author a blueprint, store it for traceability, then kick off the real
+    offline agent pipeline. Runs land in <a href="#/dev">Dev Run</a>.</p>
+    <div class="card bp-form">
+      <h3>Define the blueprint</h3>
+      <label class="required">Project name</label>
+      <input type="text" id="bp-project" placeholder="e.g. My App" required>
+      <label>Target stack</label>
+      <input type="text" id="bp-stack" placeholder="e.g. Python + SQLite + stdlib HTTP">
+      <label>Constraints</label>
+      <textarea id="bp-constraints" placeholder="Offline only, stdlib, no external APIs"></textarea>
+      <label>Acceptance criteria</label>
+      <textarea id="bp-criteria" placeholder="login works, permissions enforced, tests pass offline"></textarea>
+      <label class="required">Blueprint content</label>
+      <textarea id="bp-content" placeholder="# Product requirements&#10;# Architecture&#10;# Database design&#10;# API requirements&#10;# Frontend requirements&#10;# Security requirements&#10;# Acceptance criteria" required></textarea>
+      <div class="bp-help">Blueprints follow the structured blueprint format used by the governance
+      traceability layer (§3.5). Markdown with clear sections works best.</div>
+      <div class="bp-actions">
+        <button class="btn btn-ghost btn-sm" onclick="loadExampleBlueprint()">Load example blueprint</button>
+        <input type="file" id="bp-file" accept=".md,.txt,.markdown" style="display:none"
+               onchange="loadBlueprintFile(event)">
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('bp-file').click()">
+          Upload file (.md/.txt)</button>
+        <div class="btn-gap"></div>
+        <button class="btn btn-approve" id="bp-submit" onclick="submitBlueprint()">
+          Store Blueprint &amp; Start AI Development</button>
+      </div>
+    </div>`;
+}
+
+window.loadExampleBlueprint = function() {
+  document.getElementById("bp-content").value = EXAMPLE_BLUEPRINT;
+  toast("Example blueprint loaded.");
+};
+
+window.loadBlueprintFile = function(ev) {
+  const f = ev.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const txt = String(reader.result || "");
+    if (!txt.trim()) return toast("File is empty.");
+    document.getElementById("bp-content").value = txt;
+    toast("Blueprint loaded from " + f.name);
+  };
+  reader.readAsText(f);
+  ev.target.value = "";   // allow re-selecting the same file
+};
+
+function slugifyProject(name) {
+  return String(name || "").toUpperCase().replace(/[^A-Z0-9-]/g, "").replace(/-+/g, "-").slice(0, 24);
+}
+
+window.submitBlueprint = async function() {
+  const project = document.getElementById("bp-project").value.trim();
+  const stack = document.getElementById("bp-stack").value.trim();
+  const constraints = document.getElementById("bp-constraints").value.trim();
+  const criteria = document.getElementById("bp-criteria").value.trim();
+  const content = document.getElementById("bp-content").value.trim();
+  const errs = [];
+  if (!project) errs.push("Project name");
+  if (!content) errs.push("Blueprint content");
+  if (errs.length) return toast("Missing required: " + errs.join(", "));
+
+  const btn = document.getElementById("bp-submit");
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "Storing blueprint…";
+
+  const slug = slugifyProject(project);
+  const bpId = "BP-" + (slug || "APP") + "-001";
+  const bodyRef = [project, stack, constraints, criteria, content].join("\n---\n");
+
+  try {
+    // (b) Store blueprint for traceability (409 => already exists => idempotent ok)
+    try {
+      await api("POST", "/blueprints", {
+        id: bpId, version: "v1.0", scope: "project:" + project,
+        body_ref: bodyRef, approved_by: (ME && ME.actor_id) || "human", change_note: "Created from the offline Blueprint UI"});
+    } catch (ex) {
+      if (ex.status !== 409 && !/409/.test(String(ex.message))) throw ex;
+    }
+
+    // (c) Kick off the offline run
+    btn.textContent = "Starting AI development…";
+    const run = await runner("POST", "/api/runs", {
+      project_name: project, target_stack: stack, constraints, acceptance_criteria: criteria,
+      blueprint_content: content});
+
+    const runId = run && run.id;
+    toast("Run " + (runId || "") + " started — live dashboard loading.");
+    location.hash = "#/dev/" + (runId || "");
+  } catch (ex) {
+    toast("Failed to start run: " + ex.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+};
+
+// --------------------------------------------------- offline dev dashboard
+let devRunId = null;
+
+async function viewDev(el, id) {
+  devRunId = id;
+  if (id) {
+    await viewDevRun(el, id);
+  } else {
+    await viewDevList(el);
+  }
+}
+
+async function viewDevList(el) {
+  let runs = [];
+  try { runs = await runner("GET", "/api/runs"); }
+  catch (ex) {
+    el.innerHTML = `
+      <h1 class="page">Dev Run</h1>
+      <p class="sub">Offline agent pipeline — real stages, real orchestrator state.</p>
+      <div class="card dark"><p>⚠️ <b>Offline runner unreachable.</b> Start the local
+      orchestrator at <span class="mono">${RUNNER}</span> to list runs, or author a new one in
+      <a href="#/blueprint">Blueprint</a>.</p></div>
+      <p class="sub" style="margin-top:14px">You can still create a blueprint in
+      <a href="#/blueprint">Blueprint</a>; it will queue once the runner is back.</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <h1 class="page">Dev Run</h1>
+    <p class="sub">The real offline pipeline: Blueprint → Product → Spec → Design → Coder →
+    Tests → Reviewer → Verifier → Artifact. Opens a live dashboard with <b>LIVE — polling real
+    orchestrator state</b>.</p>
+    <div style="margin:0 0 16px"><a class="btn btn-approve" href="#/blueprint">+ New Blueprint Run</a></div>
+    ${runs.length ? "" : `<div class="card"><p class="empty-state">No offline runs yet — start one from
+      <a href="#/blueprint">Blueprint</a>.</p></div>`}
+    ${runs.map(r => `
+      <div class="run-card">
+        <div class="r-main">
+          <div class="r-id">${esc(r.id)}</div>
+          <div class="r-proj">${esc(r.project_name || "")}</div>
+        </div>
+        <div>${badge(r.status)}</div>
+        <div class="r-proj">started ${fmt(r.started_at)}</div>
+        <a class="btn btn-primary btn-sm" href="#/dev/${esc(r.id)}">Open</a>
+      </div>`).join("")}`;
+}
+
+async function viewDevRun(el, id) {
+  let run;
+  try { run = await runner("GET", "/api/runs/" + id); }
+  catch (ex) {
+    el.innerHTML = `<a href="#/dev">← All runs</a>
+      <div class="card dark"><p>⚠️ <b>Offline runner unreachable.</b> Cannot load run
+      <span class="mono">${esc(id)}</span>. Start the local orchestrator at
+      <span class="mono">${RUNNER}</span>.</p></div>`;
+    return;
+  }
+  // Backfill generated files for a finished run opened directly.
+  if (run.product && !run.product.files && run.status === "completed") {
+    try { run.product.files = (await runner("GET", "/api/runs/" + id + "/files")).files || []; }
+    catch (ex) {}
+  }
+  renderDevRun(el, run);
+}
+
+function renderDevRun(el, run) {
+  const stages = run.stages || [];
+  const running = stages.some(s => s.status === "running");
+
+  el.innerHTML = `
+    <a href="#/dev">← All runs</a>
+    <h1 class="page">Dev Run <span class="mono">${esc(run.id)}</span></h1>
+    <p class="sub">Project: <b>${esc(run.project_name)}</b> · agent pipeline status
+       ${badge(run.status)}</p>
+
+    ${running ? `<div class="live-note"><span class="spinner"></span> LIVE — polling real
+       orchestrator state (refresh every 4s)</div>` : ""}
+
+    <div class="dev-summary-strip">
+      <div class="stat"><div class="l">Project</div><b>${esc(run.project_name)}</b></div>
+      <div class="stat"><div class="l">Stack</div><div class="mono">${esc(run.target_stack || "—")}</div></div>
+      <div class="stat"><div class="l">Status</div>${badge(run.status)}</div>
+      <div class="stat"><div class="l">Started</div>${fmt(run.started_at)}</div>
+      <div class="stat"><div class="l">Finished</div>${fmt(run.finished_at)}</div>
+    </div>
+
+    <div class="section-title">Lifecycle timeline</div>
+    <div class="timeline">
+      ${stages.map(stageCard).join("") || '<div class="card"><p class="empty-state">No stages yet.</p></div>'}
+    </div>
+
+    ${renderTrace(run)}
+    ${renderProduct(run)}
+  `;
+
+  // Poll every 4s while running; stop when done/failed.
+  clearInterval(runPollTimer);
+  if (run.status === "running" || running) {
+    runPollTimer = setInterval(() => { pollRunOnce(); }, RUN_POLL_MS);
+  }
+}
+
+function stageCard(s) {
+  const cls = {done: "done", completed: "done", running: "running",
+               failed: "failed", skipped: "skipped"}[s.status] || "";
+  const running = s.status === "running";
+  const errors = (s.errors || []).map(e => `<li>${esc(e)}</li>`).join("");
+  const artifacts = (s.artifacts || []).map(a =>
+    `<span class="chip artifact">${esc(a)}</span>`).join("");
+  return `
+    <div class="stage ${cls} ${running ? "pulse" : ""}">
+      <h4>
+        <span>${esc(s.name)}</span>
+        ${badge(s.status)}
+        ${running ? `<span class="stage-flag">● running</span>` : ""}
+      </h4>
+      <div style="display:flex;gap:14px;flex-wrap:wrap">
+        <span class="chip actor">${esc(s.actor || "")}</span>
+        ${s.model ? `<span class="chip model">${esc(s.model)}</span>` : ""}
+        <span class="chip gold">${esc((s.artifacts || []).length)} artifacts</span>
+      </div>
+      <div class="times">started ${fmt(s.started_at)} · finished ${fmt(s.finished_at)}</div>
+      ${s.summary ? `<div class="summary">${esc(s.summary)}</div>` : ""}
+      ${errors ? `<ul class="errors">${errors}</ul>` : ""}
+      ${artifacts ? `<div class="artifacts">${artifacts}</div>` : ""}
+    </div>`;
+}
+
+function renderTrace(run) {
+  const trace = run.trace || [];
+  if (!trace.length) return "";
+  return `
+    <details class="trace-details">
+      <summary>Agent Execution Trace (${trace.length})</summary>
+      ${trace.map(t => `
+        <div class="trace-row">
+          <b>${esc(t.step || "")}</b>
+          <span class="chip actor">${esc(t.actor || "")}</span>
+          <span>${esc(t.action || "")}${t.model ? ` <span class="chip model">${esc(t.model)}</span>` : ""}</span>
+          <span class="tr-time">${fmt(t.time)}</span>
+        </div>`).join("") || '<div class="empty-state" style="padding:8px 0">No trace entries yet.</div>'}
+    </details>`;
+}
+
+function renderProduct(run) {
+  const p = run.product;
+  const files = (p && p.files) || [];
+  return `
+    <div class="section-title">Product Output</div>
+    ${!p ? '<div class="card dark"><p>No product artifact yet — generated once the Artifact stage completes.</p></div>' : `
+    <div class="card"><h3>Generated product</h3>
+      <div class="kv">
+        <div class="k">Workspace</div><div class="mono">${esc(p.workspace || "")}</div>
+        <div class="k">MRP id</div><div class="mono">${esc(p.mrp_id || "—")}</div>
+        <div class="k">Run id</div><div class="mono">${esc(p.run_id || run.id)}</div>
+        <div class="k">Tree hash</div><div class="mono">${esc(p.tree_hash || "—")}</div>
+        <div class="k">Tests passed</div><div>${p.tests_passed == null ? badge("pending") : (p.tests_passed ? badge("passed") : badge("failed"))}</div>
+        <div class="k">File count</div><div class="mono">${esc(p.file_count || files.length)}</div>
+      </div>
+      <div style="margin-top:14px"><b>Generated files</b></div>
+      <ul class="file-tree" id="dev-filetree">${filesTree(files)}</ul>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px;align-items:center">
+        <a class="btn btn-approve" href="${RUNNER}/api/runs/${esc(run.id)}/artifact"
+           download>Download Generated Project (.zip)</a>
+        <span class="chip gold">Open Generated Project: ${esc(p.workspace || "")}</span>
+      </div>
+    </div>`}`;
+}
+
+function filesTree(files) {
+  if (!files || !files.length) return '<li class="empty-state">No files listed yet.</li>';
+  return files.map(f => `<li><span class="f-icon">▸</span><span class="f-path">${esc(f)}</span></li>`).join("");
+}
+
+async function pollRunOnce() {
+  if (!devRunId) return;
+  let run;
+  try { run = await runner("GET", "/api/runs/" + devRunId); }
+  catch (ex) { return; }   // runner briefly down; keep polling
+
+  if (run.product && !run.product.files) {
+    try { run.product.files = (await runner("GET", "/api/runs/" + devRunId + "/files")).files || []; }
+    catch (ex) {}
+  }
+  if (!run.product && run.status === "completed") {
+    try { run.product = {files: (await runner("GET", "/api/runs/" + devRunId + "/files")).files || []}; }
+    catch (ex) {}
+  }
+
+  const el = document.getElementById("view");
+  // Only re-render if we still have this run's dashboard mounted.
+  const seg = (location.hash.replace(/^#\//, "") || "").split("/")[1] || null;
+  if (el && seg === devRunId && currentView === "dev") renderDevRun(el, run);
+  if (["completed", "failed"].includes(run.status)) clearInterval(runPollTimer);
 }
 
 // ------------------------------------------------------------------ boot

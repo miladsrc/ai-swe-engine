@@ -28,13 +28,17 @@
   <div id="app-view" class="app hidden">
     <aside class="sidebar">
       <div class="brand"><span class="gold">SASE</span><br><small>Governance</small></div>
+      <div id="sidebar-offline" class="sidebar-offline"></div>
       <nav id="nav"></nav>
       <div class="side-foot">
         <div id="whoami" class="whoami"></div>
         <button id="logout" class="btn btn-ghost btn-sm">Logout</button>
       </div>
     </aside>
-    <main class="content" id="view"></main>
+    <div id="content-wrap" class="content-wrap">
+      <div id="offline-banner" class="offline-banner hidden"></div>
+      <main class="content" id="view"></main>
+    </div>
   </div>
 
   <div id="toast" class="toast hidden"></div>
