@@ -15,10 +15,81 @@ Each function corresponds to a specific rule:
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import select
-from api.models import Spec, CRP, AgentRun, MRP
+import os
+from api.models import Spec, CRP, AgentRun, MRP, AuditLog
 
 ALLOWED_RUN_STATUSES = {"running", "completed", "failed", "blocked"}
 TERMINAL_RUN_STATUSES = {"completed", "failed", "blocked"}
+
+# Phase 2 I3 (G8): the independent Reviewer's (advisory) identity. G8 only
+# accepts a review record whose audit actor_id is EXACTLY this — a coder or
+# orchestrator cannot self-certify an AI review.
+REVIEWER_ACTOR = "agent:reviewer"
+REVIEW_ACTION = "update_mrp_review"
+
+
+def _sod_strict() -> bool:
+    """Phase 2 SoD enforcement switch (docs/PHASES/PHASE-2.md §5).
+    Gate G7 only engages when the operator has flipped SASE_SOD_MODE=strict;
+    default 'legacy' preserves existing behavior for MRPs created outside
+    the SoD flow. Read at call time so tests can toggle it."""
+    return os.environ.get("SASE_SOD_MODE", "legacy") == "strict"
+
+
+def _verifier_evidence_tree_hash(db: Session, mrp: MRP) -> str | None:
+    """
+    Search the append-only audit trail for evidence this MRP's Independent
+    Verifier actually produced (action=update_mrp_evidence with
+    execution_context.runner == 'ci:verifier'), and return the tree hash
+    that evidence was bound to. Returns None when no such record exists.
+
+    Phase 2 SoD (Step 2): the trusted verifier authority is the separate
+    ci:verifier subprocess (agents/verifier.py) — NOT the orchestrator,
+    which no longer writes evidence or claims a runner identity.
+    """
+    rows = db.execute(
+        select(AuditLog).where(
+            AuditLog.artifact_type == "MRP",
+            AuditLog.artifact_id == mrp.id,
+            AuditLog.action == "update_mrp_evidence",
+        )
+    ).scalars().all()
+    for row in rows:
+        ctx = row.context or {}
+        exec_ctx = (ctx.get("execution_context") or {})
+        if exec_ctx.get("runner") == "ci:verifier":
+            return exec_ctx.get("tree_hash")
+    return None
+
+
+def _reviewer_completed_review(db: Session, mrp: MRP) -> bool:
+    """
+    Phase 2 I3 (G8): True only when the append-only audit trail holds a
+    REVIEW record for this MRP that (a) was WRITTEN by the independent
+    Reviewer (actor_id == 'agent:reviewer', action == 'update_mrp_review')
+    and (b) set ai_review_status == 'completed'. A coder, critic, or
+    orchestrator writing to ai_review_* does not count — G8 requires the
+    reviewer-owned, reviewer-completed review. Advisory reviews with
+    'needs_revision' are not 'completed'.
+    """
+    rows = db.execute(
+        select(AuditLog).where(
+            AuditLog.artifact_type == "MRP",
+            AuditLog.artifact_id == mrp.id,
+            AuditLog.action == REVIEW_ACTION,
+        )
+    ).scalars().all()
+    for row in rows:
+        # Defensive getattr: not every audit row carries actor_id/context
+        # (e.g. other evidence rows in the same query view). Only a row
+        # written BY the reviewer that set ai_review_status=completed counts.
+        if getattr(row, "actor_id", None) != REVIEWER_ACTOR:
+            continue
+        ctx = getattr(row, "context", None) or {}
+        written = ctx.get("review_fields") or {}
+        if written.get("ai_review_status") == "completed":
+            return True
+    return False
 
 
 def assert_run_patchable(current_status: str | None, new_status: str) -> None:
@@ -122,4 +193,49 @@ def mrp_ready_for_merge(db: Session, mrp: MRP) -> tuple[bool, list[str]]:
             reasons.append(f"open High/Critical CRPs still unresolved: {', '.join(crp_ids)}")
     if mrp.status == "rejected":
         reasons.append("MRP was rejected in human review")
+
+    # ---- Phase 2 SoD gate G7 (docs/PHASES/PHASE-2.md §4) ----
+    # In strict mode an MRP is only merge-ready when its pass/fail was
+    # decided by the independent VERIFIER, not by the coder that wrote the
+    # code, and NOT by the orchestrator that coordinates the workflow. We
+    # require evidence whose runner == "ci:verifier" AND whose bound tree
+    # hash exactly matches the bytes this MRP claims to merge. Without it:
+    # no code path allows the CoderAgent or Orchestrator process to
+    # determine pass/fail at merge time.
+    if _sod_strict():
+        bound = getattr(mrp, "verified_tree_hash", None)
+        if not bound:
+            reasons.append(
+                "verification not independently owned "
+                "(MRP has no verifier-bound verified_tree_hash)")
+        else:
+            evidenced = _verifier_evidence_tree_hash(db, mrp)
+            if not evidenced:
+                reasons.append(
+                    "verification not independently owned "
+                    "(no verifier-owned evidence: runner != 'ci:verifier')")
+            elif evidenced != bound:
+                reasons.append(
+                    "verification not independently owned "
+                    "(evidence tree_hash does not match MRP verified_tree_hash)")
+
+        # ---- Phase 2 I3 SoD gate G8 (docs/ADR/ADR-002, Reviewer/I3) ----
+        # An MRP may only be merge-ready in strict mode when an INDEPENDENT
+        # Reviewer (agent:reviewer) has COMPLETED its advisory review. This
+        # has two parts, both required:
+        #   (a) the MRP's ai_review_status == 'completed' (the reviewer's
+        #       own verdict field), AND
+        #   (b) the audit trail proves that field was written BY the reviewer
+        #       (actor_id == 'agent:reviewer'), so neither the coder nor the
+        #       orchestrator can set it on the MRP's behalf.
+        if getattr(mrp, "ai_review_status", None) != "completed":
+            reasons.append(
+                "AI review not completed "
+                "(ai_review_status != 'completed' in strict mode)")
+        elif not _reviewer_completed_review(db, mrp):
+            reasons.append(
+                "AI review not independently owned "
+                "(no reviewer-owned completed review record "
+                "(actor_id != 'agent:reviewer' or not completed))")
+
     return (len(reasons) == 0), reasons

@@ -16,13 +16,12 @@ from types import SimpleNamespace
 import pytest
 
 import agents.llm as llm_mod
+from agents.scanner import _pattern_for, security_scan
 from agents.coder_agent import (
     CODER_SYSTEM,
-    _pattern_for,
     parse_file_blocks,
     prompt_provenance,
     record_ci_evidence,
-    security_scan,
 )
 from agents.llm import OllamaLLM, TemplateLLM, prompt_hash
 from api.schemas import MRPEvidenceUpdate

@@ -82,3 +82,8 @@ def mrp_id(pull_request_number: int) -> str:
 
 def vcr_id(related_artifact_id: str) -> str:
     return f"VCR-{related_artifact_id}"
+
+
+def verification_request_id(db: Session) -> str:
+    seq = _next_seq(db, "verification_request")
+    return f"VR-{seq:06d}"

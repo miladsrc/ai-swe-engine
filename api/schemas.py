@@ -150,6 +150,10 @@ class MRPCreate(BaseModel):
     blueprint_version: Optional[str] = None
     change_summary: Optional[str] = None
     affected_modules: List[str] = []
+    # Phase 2 SoD (G7): set by the orchestrator in the strict flow to the
+    # immutable git tree hash it verified. Gate G7 requires evidence whose
+    # execution_context.tree_hash matches this exact value.
+    verified_tree_hash: Optional[str] = None
 
 
 class MRPEvidenceUpdate(BaseModel):
@@ -174,6 +178,10 @@ class MRPEvidenceUpdate(BaseModel):
     # not just pass/fail badges.
     execution_context: Optional[Dict[str, Any]] = Field(
         None, description="Raw execution evidence persisted into the audit context")
+    # Phase 2 SoD (G7): binds the MRP to the git tree hash the orchestrator
+    # verified. Unlike execution_context, this is written to the mrps
+    # verified_tree_hash column so the merge gate can compare it exactly.
+    verified_tree_hash: Optional[str] = None
 
 
 class MRPHumanDecision(BaseModel):
@@ -182,6 +190,24 @@ class MRPHumanDecision(BaseModel):
     # Identity is taken from the X-Acting-As header (api/security.py);
     # this field is accepted for backwards compatibility but ignored.
     human_reviewer: Optional[str] = None
+
+
+class MRPReviewUpdate(BaseModel):
+    """
+    Phase 2 I3 (G8): the advisory Reviewer's write input. This is the ONLY
+    payload the independent agent:reviewer may apply to an MRP — its own
+    review fields. It deliberately carries NO verification-evidence fields
+    (unit/security/lint status), NO merge decision, and NO code/agent-run
+    mutation. The endpoint (PATCH /mrps/{id}/review) enforces this set
+    server-side regardless of what is sent.
+    """
+    ai_review_status: Optional[str] = Field(
+        None, description="Reviewer's own verdict: in_progress | needs_revision | completed")
+    ai_review_notes: Optional[List[str]] = Field(
+        None, description="Free-text review notes (advisory only).")
+    ai_review_findings: Optional[List[Dict[str, Any]]] = Field(
+        None, description="Structured findings: [{severity, file, line, message}].")
+
 
 
 class BlueprintCreate(BaseModel):
@@ -225,3 +251,43 @@ class MeResponse(BaseModel):
     username: str
     display_name: Optional[str] = None
     actor_id: str
+
+
+# ---------------------------------------------------- Step 2B: remote verification ----
+
+class VerificationRequestCreate(BaseModel):
+    """
+    NO secrets. The Orchestrator enqueues only immutable references so the
+    remote Verifier can fetch the exact commit and bind its evidence to it.
+    """
+    run_id: str = Field(..., min_length=1, description="agent run id (one logical request per run)")
+    mrp_id: str = Field(..., min_length=1)
+    commit: str = Field(..., min_length=1, description="EXACT pinned commit SHA (never a branch tip)")
+    worktree_ref: str = Field(..., min_length=1, description="repo / object-store reference for the commit")
+    ttl_seconds: Optional[int] = Field(3600, ge=60, le=86400,
+                                       description="request TTL; expires -> fail closed")
+
+
+class VerificationRequestComplete(BaseModel):
+    """Verifier-only completion input. NEVER carries a credential."""
+    status: str  # 'passed' | 'failed' | 'error'
+    verified_tree_hash: Optional[str] = None
+    failure_reason: Optional[str] = None
+
+
+class VerificationRequestStatus(BaseModel):
+    """Non-secret status the Orchestrator may read. Never returns credentials."""
+    id: str
+    run_id: str
+    mrp_id: str
+    commit: str
+    status: str            # pending | running | passed | failed | expired | error
+    verified_tree_hash: Optional[str] = None
+    failure_reason: Optional[str] = None
+    created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

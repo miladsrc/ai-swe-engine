@@ -4,7 +4,8 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from api.routers import (projects, requirements, agent_runs, crp, mrp, vcr,
-                         traceability, evidence, blueprints, auth, dashboard)
+                         traceability, evidence, blueprints, auth, dashboard,
+                         verification_requests, review)
 
 app = FastAPI(
     title="SASE Traceability Backbone",
@@ -30,6 +31,8 @@ app.include_router(evidence.router)
 app.include_router(blueprints.router)
 app.include_router(auth.router)
 app.include_router(dashboard.router)
+app.include_router(verification_requests.router)
+app.include_router(review.router)
 
 # Governance Dashboard UI — a pure client layer over the API (static files,
 # zero build tooling, air-gap safe). Served under /ui; / redirects there.

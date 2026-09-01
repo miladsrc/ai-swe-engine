@@ -99,22 +99,8 @@ def require_human_actor(
     return x_acting_as.strip()
 
 
-def require_ci_actor(
-    x_acting_as: str | None = Header(default=None),
-    x_ci_token: str | None = Header(default=None),
-) -> str:
-    """
-    FastAPI dependency for machine-written evidence (e.g. PATCH
-    /mrps/{id}/evidence). Requires X-Acting-As starting with 'ci:' or
-    'system:' and a matching X-CI-Token header backed by SASE_CI_TOKEN.
-    Returns the verified actor id.
-
-    P3 fail-closed rule: if SASE_CI_TOKEN is NOT configured, evidence
-    writes are refused (503) — never silently allowed. There is no
-    hardcoded fallback token. docker-compose sets a documented dev
-    placeholder; production should inject it from a secret manager, or
-    replace it entirely with mTLS between CI and this service.
-    """
+def _check_ci_actor(x_acting_as: str | None, x_ci_token: str | None) -> str:
+    """Core logic of require_ci_actor (shared so security tests can call it)."""
     if not x_acting_as:
         raise HTTPException(
             401,
@@ -149,6 +135,146 @@ def require_ci_actor(
         )
     if not hmac.compare_digest(x_ci_token.strip(), expected_token):
         raise HTTPException(403, "X-CI-Token does not match the configured CI token.")
+    return actor
+
+
+def require_ci_actor(
+    x_acting_as: str | None = Header(default=None),
+    x_ci_token: str | None = Header(default=None),
+) -> str:
+    """FastAPI dependency wrapper around _check_ci_actor (legacy evidence
+    identity). Kept for backward compatibility and outside strict mode."""
+    return _check_ci_actor(x_acting_as, x_ci_token)
+
+
+# Phase 2 SoD (Step 2): the verifier is a DISTINCT machine authority with a
+# DISTINCT credential (SASE_VERIFIER_TOKEN). In strict mode, trusted
+# verification evidence may only be written by the verifier — neither the
+# coder nor the orchestrator may write it. A merely self-declared
+# 'runner="ci:verifier"' cannot authenticate: the token is checked with a
+# constant-time compare against SASE_VERIFIER_TOKEN.
+VERIFIER_ACTOR = "ci:verifier"
+
+
+def require_verifier_actor(
+    x_acting_as: str | None = Header(default=None),
+    x_ci_token: str | None = Header(default=None),
+) -> str:
+    """
+    FastAPI dependency for the TRUSTED verification-evidence write path
+    (PATCH /mrps/{id}/evidence in strict mode). Accepts ONLY the exact
+    verifier identity 'ci:verifier' with a matching SASE_VERIFIER_TOKEN.
+    Returns the verified actor id.
+
+    Fail-closed: if SASE_VERIFIER_TOKEN is unset on the deployment, evidence
+    writes are refused (503). There is no fallback, and the generic
+    SASE_CI_TOKEN is NOT acceptable here — the verifier credential is
+    separate by design.
+    """
+    if not x_acting_as:
+        raise HTTPException(
+            401,
+            "Missing X-Acting-As header. Trusted verification evidence requires "
+            f"the verifier identity '{VERIFIER_ACTOR}'.",
+        )
+    actor = x_acting_as.strip()
+    if actor != VERIFIER_ACTOR:
+        raise HTTPException(
+            403,
+            f"X-Acting-As '{x_acting_as}' is not the Verifier identity. "
+            f"Only '{VERIFIER_ACTOR}' may write trusted verification evidence "
+            f"(coders, orchestrator, and generic CI may not).",
+        )
+
+    expected_token = os.environ.get("SASE_VERIFIER_TOKEN", "")
+    if not expected_token:
+        raise HTTPException(
+            503,
+            "Verifier evidence is locked: SASE_VERIFIER_TOKEN is not configured. "
+            "Set this deployment's verifier credential to allow trusted "
+            "verification evidence.",
+        )
+    if not x_ci_token:
+        raise HTTPException(
+            401,
+            "Missing X-CI-Token header. This deployment requires the verifier "
+            "credential to record trusted verification evidence.",
+        )
+    if not hmac.compare_digest(x_ci_token.strip(), expected_token):
+        raise HTTPException(403, "Verifier token mismatch.")
+    return actor
+
+
+def require_evidence_actor(
+    x_acting_as: str | None = Header(default=None),
+    x_ci_token: str | None = Header(default=None),
+) -> str:
+    """
+    Evidence-write gate for PATCH /mrps/{id}/evidence, dispatching on the
+    SoD mode:
+      - strict  -> require_verifier_actor (trusted evidence ONLY from the
+                   independent verifier; coder/orchestrator/CI rejected)
+      - legacy  -> require_ci_actor (existing shared-token CI identity)
+    Read at call time so tests can toggle SASE_SOD_MODE.
+    """
+    if os.environ.get("SASE_SOD_MODE", "legacy") == "strict":
+        return require_verifier_actor(x_acting_as, x_ci_token)
+    return require_ci_actor(x_acting_as, x_ci_token)
+
+
+# Phase 2 I3 (G8): the REVIEWER is a DISTINCT, ADVISORY-ONLY machine
+# authority with its OWN credential (SASE_REVIEWER_TOKEN). It writes ONLY
+# its own review fields (ai_review_status, ai_review_notes,
+# ai_review_findings) via the dedicated PATCH /mrps/{id}/review endpoint —
+# never verification evidence, never code, never agent runs, and never a
+# merge decision. Its identity is agent:reviewer (an agent role, but with
+# a separately-administered token so a coder process cannot self-declare
+# as reviewer). Fail-closed: unset credential refuses writes (503).
+REVIEWER_ACTOR = "agent:reviewer"
+
+
+def require_reviewer_actor(
+    x_acting_as: str | None = Header(default=None),
+    x_reviewer_token: str | None = Header(default=None),
+) -> str:
+    """
+    FastAPI dependency for the ADVISORY review-write path
+    (PATCH /mrps/{id}/review). Accepts ONLY the exact reviewer identity
+    'agent:reviewer' with a matching SASE_REVIEWER_TOKEN. The coder, the
+    orchestrator, the verifier, and generic CI cannot write review fields.
+    Returns the verified actor id.
+    """
+    if not x_acting_as:
+        raise HTTPException(
+            401,
+            "Missing X-Acting-As header. Review writes require the reviewer "
+            f"identity '{REVIEWER_ACTOR}'.",
+        )
+    actor = x_acting_as.strip()
+    if actor != REVIEWER_ACTOR:
+        raise HTTPException(
+            403,
+            f"X-Acting-As '{x_acting_as}' is not the Reviewer identity. "
+            f"Only '{REVIEWER_ACTOR}' may write AI review fields "
+            f"(coders, the orchestrator, the verifier, and generic CI may not).",
+        )
+
+    expected_token = os.environ.get("SASE_REVIEWER_TOKEN", "")
+    if not expected_token:
+        raise HTTPException(
+            503,
+            "Reviewer writes are locked: SASE_REVIEWER_TOKEN is not configured. "
+            "Set this deployment's reviewer credential to allow AI review "
+            "fields to be recorded.",
+        )
+    if not x_reviewer_token:
+        raise HTTPException(
+            401,
+            "Missing X-Reviewer-Token header. This deployment requires the "
+            "reviewer credential to record AI review fields.",
+        )
+    if not hmac.compare_digest(x_reviewer_token.strip(), expected_token):
+        raise HTTPException(403, "Reviewer token mismatch.")
     return actor
 
 

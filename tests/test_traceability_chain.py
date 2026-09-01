@@ -18,7 +18,21 @@ BASE = "http://localhost:8000"
 # LEGACY identity header — kept ONLY as a fallback for environments without
 # live credentials. Dies automatically once SASE_REQUIRE_HUMAN_TOKEN=1.
 HUMAN = {"X-Acting-As": "human:pytest"}
+# Phase 2 SoD Step 2: in strict mode TRUSTED verification evidence may only
+# be written by the independent verifier (ci:verifier) using its OWN
+# credential (SASE_VERIFIER_TOKEN), separate from the shared CI token.
+# The legacy `CI` (ci:pipeline + SASE_CI_TOKEN) is retained for the
+# non-strict (legacy) evidence identity and for negative checks.
 CI = {"X-Acting-As": "ci:pipeline", "X-CI-Token": "dev-ci-token-change-me"}
+VERIFIER = {"X-Acting-As": "ci:verifier",
+            "X-CI-Token": os.environ.get("SASE_VERIFIER_TOKEN",
+                                         "dev-verifier-token-change-me")}
+# Phase 2 I3 (ADR-002): the independent reviewer (agent:reviewer) uses its
+# own credential (SASE_REVIEWER_TOKEN). G8 requires a reviewer-owned
+# completed AI review before an MRP can be merge-ready in strict mode.
+REVIEWER = {"X-Acting-As": "agent:reviewer",
+            "X-Reviewer-Token": os.environ.get(
+                "SASE_REVIEWER_TOKEN", "dev-reviewer-token-change-me")}
 
 
 def _human_auth(client) -> tuple[dict, str, bool]:
@@ -158,12 +172,32 @@ def test_full_chain_and_gates(client):
     assert crp_id in r.json()["open_crp_ids"], "MRP did not surface the open CRP tied to its Spec"
 
     # 9. GATE CHECK: cannot approve MRP while High CRP is open
-    # Evidence must come from an authenticated CI actor (SASE_CI_TOKEN from
-    # docker-compose.yml).
+    # Evidence must come from the INDEPENDENT VERIFIER (ci:verifier) using
+    # its own credential (SASE_VERIFIER_TOKEN) — see api/security.py
+    # require_verifier_actor. In strict mode a generic CI/coder/orchestrator
+    # identity writing trusted verification evidence is rejected (asserted
+    # below), and G7 requires a verifier-bound tree hash to merge.
     r = client.patch(f"/mrps/{mrp_id}/evidence", json={
-        "unit_tests_status": "passed", "security_scan_status": "passed"
-    }, headers=CI)
-    assert r.status_code == 200
+        "unit_tests_status": "passed",
+        "security_scan_status": "passed",
+        "verified_tree_hash": "deadbeef",
+        "execution_context": {"runner": "ci:verifier",
+                              "tree_hash": "deadbeef"},
+    }, headers=VERIFIER)
+    assert r.status_code == 200, (
+        f"verifier-owned evidence write must succeed in strict mode (got "
+        f"{r.status_code}): {r.text}")
+    # Negative: the legacy CI / coder / orchestrator identity cannot write
+    # trusted verification evidence in strict mode.
+    for spoof in (CI, {"X-Acting-As": "ci:test-runner",
+                       "X-CI-Token": "dev-ci-token-change-me"}):
+        r2 = client.patch(f"/mrps/{mrp_id}/evidence", json={
+            "unit_tests_status": "passed",
+            "security_scan_status": "passed",
+            "verified_tree_hash": "deadbeef",
+        }, headers=spoof)
+        assert r2.status_code in (403, 503), (
+            f"non-verifier evidence write must be rejected (got {r2.status_code})")
     r = client.post(f"/mrps/{mrp_id}/human-decision", json={
         "decision": "approved"
     }, headers=human_headers)
@@ -175,6 +209,24 @@ def test_full_chain_and_gates(client):
         "decision_status": "approved_with_changes", "rationale": "test resolution",
     }, headers=human_headers)
     assert r.status_code == 200
+
+    # 10a. G8: a completed AI review owned by the INDEPENDENT reviewer
+    # (agent:reviewer, SASE_REVIEWER_TOKEN) is required for merge-ready in
+    # strict mode — a coder/orchestrator/CI identity cannot file one.
+    r = client.patch(f"/mrps/{mrp_id}/review", json={
+        "ai_review_status": "completed",
+        "ai_review_notes": ["advisory: no blocking findings"],
+        "ai_review_findings": [],
+    }, headers=REVIEWER)
+    assert r.status_code == 200, (
+        f"reviewer-owned review must be writable (got {r.status_code}): {r.text}")
+    # Negative: the verifier/coder/CI identity must NOT be able to file a review.
+    for spoof in (VERIFIER, CI):
+        r2 = client.patch(f"/mrps/{mrp_id}/review", json={
+            "ai_review_status": "completed",
+        }, headers=spoof)
+        assert r2.status_code in (403, 503), (
+            f"non-reviewer review write must be rejected (got {r2.status_code})")
 
     r = client.post(f"/mrps/{mrp_id}/human-decision", json={
         "decision": "approved"

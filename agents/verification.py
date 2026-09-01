@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agents.coder_agent import security_scan
+from agents.scanner import security_scan
 
 
 @dataclass

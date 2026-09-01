@@ -4,7 +4,7 @@ from api.database import get_db
 from api import models, schemas, ids
 from api.audit import record_audit
 from api.gates import mrp_ready_for_merge, no_open_high_or_critical_crp_blocks_merge
-from api.security import require_human_actor, require_ci_actor
+from api.security import require_human_actor, require_evidence_actor
 
 router = APIRouter(prefix="/mrps", tags=["mrp"])
 
@@ -40,6 +40,7 @@ def create_mrp(payload: schemas.MRPCreate, db: Session = Depends(get_db)):
         blueprint_version=payload.blueprint_version,
         change_summary=payload.change_summary,
         affected_modules=payload.affected_modules,
+        verified_tree_hash=payload.verified_tree_hash,
         open_crp_ids=open_crps,
         status="draft",
     )
@@ -56,16 +57,22 @@ def update_evidence(
     mrp_id: str,
     payload: schemas.MRPEvidenceUpdate,
     db: Session = Depends(get_db),
-    ci_actor: str = Depends(require_ci_actor),
+    evidence_actor: str = Depends(require_evidence_actor),
 ):
     """
-    CI/machine actors (test runner, linter, security scanner) call this
-    incrementally as each check completes. Identity comes from the
-    X-Acting-As header (must start with 'ci:' or 'system:', optionally
-    backed by the shared SASE_CI_TOKEN — see api/security.py), never from
-    an unauthenticated request: otherwise anyone could forge gate-passing
-    evidence. Once all evidence is in, call POST /mrps/{id}/check-ready
-    to evaluate the §5.6.5 gate.
+    CI/machine actors call this incrementally as each check completes.
+    Identity comes from the X-Acting-As header + credential, never from an
+    unauthenticated request (otherwise anyone could forge gate-passing
+    evidence).
+
+    Phase 2 SoD (Step 2): in STRICT mode this path is Verifier-only —
+    require_evidence_actor enforces the ci:verifier identity + its own
+    SASE_VERIFIER_TOKEN (separate from the shared CI token). Neither the
+    coder nor the orchestrator can write trusted verification evidence. In
+    legacy mode it falls back to the shared CI identity.
+
+    Once all evidence is in, call POST /mrps/{id}/check-ready to evaluate
+    the §5.6.5 gate.
 
     Phase 1: Evidence records now include provenance tagging (source: human | tool | llm).
     """
@@ -97,8 +104,8 @@ def update_evidence(
         audit_context["execution_context"] = execution_context
     
     record_audit(db,
-                 actor_type="ci" if ci_actor.startswith("ci:") else "system",
-                 actor_id=ci_actor, action="update_mrp_evidence",
+                 actor_type="ci" if evidence_actor.startswith("ci:") else "system",
+                 actor_id=evidence_actor, action="update_mrp_evidence",
                  artifact_type="MRP", artifact_id=mrp_id,
                  context=audit_context)
     db.commit()

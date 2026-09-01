@@ -2,6 +2,21 @@
 
 ---
 
+## 2026-08-31 (Phase 2 architecture decision — REAL SoD isolation)
+
+### Decision (owner)
+- Phase 2 must target **genuine (real) Separation of Duties isolation**, not
+  only logical separation (classes/prompts in the orchestrator process).
+- Full record: **`docs/ADR/ADR-002-genuine-sod-isolation.md`** (also logged in
+  Sara persistent memory). Read this ADR first in the next terminal.
+- Agreed minimum architecture: User → Orchestrator → Planner/task agents/Coder →
+  Independent Verifier subprocess → G7 → Independent Reviewer subprocess → G8 →
+  Human → Merge. Rule: `Coder ≠ Verifier ≠ Reviewer ≠ Human`.
+- No framework redesign, no microservices, no LangGraph/message bus for now.
+- Implementation **not started**; continue from P0/P1 in the ADR.
+
+---
+
 ## 2026-08-26 (Phase 2 SoD design — no implementation)
 
 ### Added

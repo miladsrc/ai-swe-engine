@@ -102,13 +102,15 @@ class EngineClient:
 
     # -- transport ------------------------------------------------------
     def request(self, method: str, path: str, payload: dict | None = None,
-                ok: tuple[int, ...] = (200, 201)) -> dict:
+                ok: tuple[int, ...] = (200, 201),
+                extra: dict | None = None) -> dict:
+
         method = method.upper()
         self._assert_allowed(method, path)
         data = json.dumps(payload).encode() if payload is not None else None
         req = urllib.request.Request(
             f"{self.base_url}{path}", data=data,
-            headers=self._headers(), method=method)
+            headers=self._headers(extra), method=method)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = resp.read().decode()
@@ -124,5 +126,11 @@ class EngineClient:
     def post(self, path: str, payload: dict) -> dict:
         return self.request("POST", path, payload)
 
-    def patch(self, path: str, payload: dict) -> dict:
-        return self.request("PATCH", path, payload)
+    def patch(self, path: str, payload: dict, extra: dict | None = None) -> dict:
+        return self.request("PATCH", path, payload, extra=extra)
+
+# -- will be done if we needed any updatable option
+
+    # def option(self, path: str, payload: dict,
+    #            extra: dict | None = None) -> dict:
+    #     return self.request("OPTION", path, payload, extra=extra)

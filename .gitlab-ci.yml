@@ -1,0 +1,41 @@
+# Step 2B — Remote Verifier execution boundary (DEV/CONTAINMENT harness).
+#
+# THIS FILE IS THE CONTAINMENT HARNESS, NOT THE GENUINE BOUNDARY.
+#
+# Goal this job proves (local GitLab runner on this host):
+#   - the verifier runs as a CITIZEN of a separate pipeline (its own CI), not
+#     as a local subprocess the Orchestrator controls;
+#   - the token is delivered to the verifier process via the CI/CD VARIABLE
+#     store (Protected + Masked), never read by the Orchestrator;
+#   - the job ONLY pins a commit and hands it to the verifier runner.
+#
+# It does NOT prove the genuine threat model: a runner registered on this
+# host runs under the SAME local admin (m.barani) who controls the Docker
+# daemon, can `docker inspect` container env, and is in BUILTIN\Administrators.
+# Therefore this job does NOT establish the required separate authority; it is
+# an integration exercise only. See docs/ADR/ADR-002 and
+# tests/test_sod_remote_boundary.py::test_same_user_local_admin_is_not_genuine.
+
+stages:
+  - verify
+
+# The `sod-verifier` runner tag forces these jobs to run only on a runner whose
+# RUNTIME/OS account and secret store we intend to be the verifier authority.
+# In a genuine deployment this runner lives on separately-administered infra.
+# Here it lives on the same host (containment only).
+verifier:
+  stage: verify
+  tags:
+    - sod-verifier
+  variables:
+    # Non-secret input for the job.
+    SASE_API_URL: "${SASE_API_URL:-http://host.docker.internal:8000}"
+  script:
+    # NEVER echo the token. It is injected by GitLab as a Protected+Masked
+    # variable into THIS job's environment only.
+    - test -n "$SASE_VERIFIER_TOKEN" || { echo "SASE_VERIFIER_TOKEN_NOT_SET" >&2; exit 2; }
+    - git fetch --quiet origin +refs/heads/main:refs/heads/main
+    - git checkout --detach "CI_COMMIT_SHA" 2>/dev/null || git checkout --detach HEAD
+    # The verifier runner-mode claims a pending verification request via the
+    # API, verifies the pinned commit, writes evidence, completes the request.
+    - python -m agents.verifier --claim --api "$SASE_API_URL"

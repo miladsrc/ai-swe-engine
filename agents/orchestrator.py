@@ -27,6 +27,7 @@ Usage:
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -172,12 +173,10 @@ def _run_code_phase_strict(coder, base_url: str, spec_id: str,
                            state: dict, use_ollama) -> None:
     """
     Phase 2 SoD strict flow (docs/PHASES/PHASE-2.md steps A-H):
-    proposal -> snapshot -> independent verification -> evidence with
-    runner=orchestrator + tree_hash -> MRP -> terminal patch -> CRP.
+    proposal -> snapshot -> independent verification (verifier subprocess,
+    Step 2) -> MRP -> terminal patch -> CRP.
     """
-    from agents import verification as V
-    from agents.coder_agent import (CoderResult, extract_open_questions,
-                                    record_ci_evidence)
+    from agents.coder_agent import (CoderResult, extract_open_questions)
 
     result = coder.implement_spec(spec_id, prd_id=state.get("prd_id"),
                                   user_story_id=state.get("user_story_id"),
@@ -193,32 +192,131 @@ def _run_code_phase_strict(coder, base_url: str, spec_id: str,
     _print_human_gate_instructions(base_url, crp_id, result.mrp_id)
 
 
+def _run_verifier_subprocess(workspace: Path, commit: str, mrp_id: str,
+                             run_id: str, base_url: str,
+                             test_command: list[str] | None = None) -> dict:
+    """
+    Spawn the Independent Verifier as a SEPARATE OS subprocess
+    (python -m agents.verifier) and parse its machine-readable stdout result.
+
+    The Orchestrator passes ONLY immutable references (workspace, pinned
+    commit, MRP id, run id, base URL) via stdin — never executable code or
+    arbitrary authority. It deliberately does NOT read or pass the verifier
+    credential (SASE_VERIFIER_TOKEN): the subprocess reads it from its own
+    inherited environment, so the Orchestrator process never holds it.
+
+    Returns the verifier's JSON result dict. Raises RuntimeError on a
+    protocol/operational failure (non-zero exit or unparseable output).
+
+    DEV/CONTAINMENT path (Step 2B): the genuine remote runner claims work via
+    the request API instead. This direct stdin mode is retained for the local
+    legacy path and low-level tests. See docs/ADR/ADR-002.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    envelope = {
+        "version": 1,
+        "workspace": str(workspace.resolve()),
+        "commit": commit,
+        "mrp_id": mrp_id,
+        "run_id": run_id,
+        "base_url": base_url,
+    }
+    if test_command:
+        envelope["test_command"] = test_command
+
+    # env=None inherits the parent environment; the verifier subprocess reads
+    # SASE_VERIFIER_TOKEN itself. The orchestrator code below never references
+    # that variable name.
+    proc = subprocess.run(
+        [sys.executable, "-m", "agents.verifier"],
+        input=json.dumps(envelope), text=True, capture_output=True,
+        cwd=repo_root, env=None, timeout=int(os.environ.get("VERIFIER_TIMEOUT", "900")),
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"verifier subprocess failed (exit {proc.returncode}): "
+            f"{(proc.stdout or '').strip()[-1500:] or (proc.stderr or '').strip()[-1500:]}")
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"verifier returned non-JSON output: "
+                           f"{proc.stdout[:2000]}")
+    if not result.get("ok"):
+        raise RuntimeError(f"verifier reported failure: {result.get('error')}")
+    return result
+
+
+def _spawn_verifier_runner(api_base: str) -> None:
+    """
+    DEV/CONTAINMENT shim: spawn the verifier RUNNER-mode subprocess
+    (python -m agents.verifier --claim) which atomically claims the pending
+    verification request via the API, verifies the pinned commit, writes
+    evidence, and completes the request. This stands in for the genuine
+    separately-administered remote runner.
+
+    The runner reads SASE_VERIFIER_TOKEN from its own inherited environment
+    (env=None) — the Orchestrator's code never references that variable name.
+    In a genuine deployment the runner executes under a separate authority and
+    secret store, which THIS local subprocess cannot reproduce (see
+    docs/ADR/ADR-002 and test_sod_remote_boundary).
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    subprocess.run(
+        [sys.executable, "-m", "agents.verifier", "--claim",
+         "--api", api_base],
+        cwd=repo_root, env=None,
+        timeout=int(os.environ.get("VERIFIER_TIMEOUT", "900")),
+    )
+
+
+def _poll_verification_request(coder_engine, request_id: str,
+                               max_wait: int = 920, poll_ms: int = 500) -> dict:
+    """
+    Poll non-secret status until the request is terminal (passed/failed/
+    expired/error). Fail-closed on timeout. Returns the status schema dict.
+    """
+    import time as _time
+    waited = 0
+    while waited < max_wait:
+        status = coder_engine.get(f"/verification-requests/{request_id}/status")
+        if status["status"] in ("passed", "failed", "expired", "error"):
+            return status
+        _time.sleep(poll_ms / 1000.0)
+        waited += poll_ms
+    raise RuntimeError(
+        f"verification request {request_id} did not reach a terminal state "
+        f"within {max_wait}s (fail-closed).")
+
+
 def _sod_verify_and_package(coder_engine, workspace: Path, spec_id: str,
                             result, state: dict):
     """
-    Orchestrator-owned verification + packaging (SoD steps B-H), shared by
-    the CLI strict flow AND the validation demo script — one code path, so
-    the demo validates the real machinery. Verifies the proposal against
-    its bound tree hash, records orchestrator-owned evidence, creates the
-    MRP, raises CRP if needed, and applies the single terminal patch.
-    Returns (result, crp_id, tree_hash).
+    SoD coordination + packaging (steps B-H), shared by the CLI strict flow
+    AND the validation demo script — one code path, so the demo validates the
+    real machinery.
+
+    Step 2B boundary: the Orchestrator no longer performs verification and it
+    does NOT hold the verifier credential. It COORDINATES only:
+      - creates the MRP (without manufacturing verified_tree_hash),
+      - enqueues an IMMUTABLE verification request (run_id, pinned commit,
+        worktree ref) via POST /verification-requests,
+      - arranges execution by the independent Verifier (here a dev/containment
+        runner shim; genuinely a separately-administered remote runner),
+      - polls ONLY non-secret status until terminal,
+      - reads the AUTHORITATIVE verified_tree_hash back from the request,
+      - raises the CRP and applies the single terminal patch.
+
+    The Verifier (agents/verifier.py --claim) computes the tree hash from the
+    actual pinned checkout and writes trusted evidence with its own
+    credential. The Orchestrator submits, waits, and reads — nothing more.
+
+    Returns (result, crp_id, tree_hash). tree_hash is the authoritative value
+    reported back by the verification request.
     """
     from agents import verification as V
-    from agents.coder_agent import extract_open_questions, record_ci_evidence
+    from agents.coder_agent import extract_open_questions
 
-    tree = V.tree_hash(workspace)
-    print(f"[verify] bound tree hash: {tree[:12]}…")
-
-    tests = V.run_tests_step(workspace, expected_tree=tree,
-                             command=state.get("test_command"))
-    print(f"[verify] test_execution: {'PASS' if tests.passed else 'FAIL'}")
-    # Scan + lint over a clean checkout of the SAME bound bytes.
-    with V.clean_checkout(workspace, V.head_commit(workspace)) as checkout:
-        scan = V.run_scan_step(checkout, expected_tree=tree)
-        lint = V.run_lint_step(checkout)
-    print(f"[verify] security_scan: {'PASS' if scan.passed else 'FAIL'}; "
-          f"lint: {'PASS' if lint.passed else 'FAIL'}")
-
+    # MRP must exist before the Verifier can write evidence against it.
     spec = coder_engine.get(f"/specs/{spec_id}")
     questions = extract_open_questions(spec["body_ref"])
 
@@ -237,26 +335,47 @@ def _sod_verify_and_package(coder_engine, workspace: Path, spec_id: str,
         "change_summary": f"Implement {spec_id} per validated spec "
                           f"(agent run {result.run_id}, SoD strict).",
         "affected_modules": result.generated_files,
+        # NOTE: verified_tree_hash is intentionally NOT set here — the
+        # Orchestrator must not manufacture the authoritative tree hash. The
+        # Verifier computes and returns it via the verification request.
     })
     result.mrp_id = mrp["id"]
 
-    # Evidence: LLM-free CI identity records ORCHESTRATOR-run results,
-    # bound to the immutable tree hash (G7 data).
-    ci = EngineClient(state["base_url"], ROLES["test_runner"],
-                      ci_token=os.environ.get("SASE_CI_TOKEN"))
-    record_ci_evidence(ci, result.mrp_id, tests.passed, scan.passed,
-                       lint.passed,
-                       execution_context={
-                           "runner": "orchestrator",
-                           "provenance": "tool",
-                           "sod_mode": "strict",
-                           "tree_hash": tree,
-                           "test_output": tests.output[-8000:],
-                           "security_findings": [
-                               l for l in scan.output.splitlines() if l][:20],
-                           "lint_output": lint.output[-4000:],
-                           "generated_files": result.generated_files,
-                       })
+    # Step 2B: enqueue an immutable verification request (NO secrets).
+    commit = V.head_commit(workspace)
+    req = coder_engine.post("/verification-requests", {
+        "run_id": result.run_id,
+        "mrp_id": result.mrp_id,
+        "commit": commit,
+        "worktree_ref": str(workspace.resolve()),
+    })
+    request_id = req["id"]
+    print(f"[verify] enqueued verification request {request_id} "
+          f"(commit {commit[:8]}…); awaiting verifier runner…")
+
+    # Arrange execution by the independent Verifier. Genuine deployment: a
+    # separately-administered remote runner claims it. DEV/CONTAINMENT shim:
+    # spawn the standalone --claim runner locally (env=None; it reads its own
+    # credential). The Orchestrator never touches the credential.
+    _spawn_verifier_runner(state["base_url"])
+
+    # Poll non-secret status until terminal (fail-closed).
+    vr = _poll_verification_request(coder_engine, request_id)
+
+    if vr["status"] != "passed":
+        raise RuntimeError(
+            f"verification request {request_id} did not PASS: "
+            f"status={vr['status']} reason={vr.get('failure_reason')}")
+
+    tree = vr.get("verified_tree_hash")
+    if not tree:
+        raise RuntimeError("verification request passed but carried no "
+                           "authoritative tree hash")
+
+    # The request only reports pass/fail; tests/scan/lint all passed together
+    # for a 'passed' status. Expose them as True for reporting.
+    tests_passed = scan_passed = lint_passed = True
+    print(f"[verify] verifier PASS tree={tree[:12]}…")
 
     # CRP BEFORE the single terminal patch (terminal runs are immutable).
     crp_id = None
@@ -275,19 +394,19 @@ def _sod_verify_and_package(coder_engine, workspace: Path, spec_id: str,
         })["id"]
 
     final_status = ("blocked" if questions else
-                    "completed" if (tests.passed and scan.passed
-                                    and lint.passed) else "failed")
+                    "completed" if (tests_passed and scan_passed
+                                    and lint_passed) else "failed")
     coder_engine.patch(f"/agent-runs/{result.run_id}", {
         "status": final_status,
         "commit_hash": result.commit_hash,
         "mrp_id": result.mrp_id,
         "tools_used": ["ollama:local", "pytest",
-                       "verification:orchestrator"],
+                       "verification:remote-request"],
         "reflection_iterations": 0,
     })
-    result.tests_passed = tests.passed
-    result.security_passed = scan.passed
-    result.lint_passed = lint.passed
+    result.tests_passed = tests_passed
+    result.security_passed = scan_passed
+    result.lint_passed = lint_passed
     return result, crp_id, tree
 
 

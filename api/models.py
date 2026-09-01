@@ -163,6 +163,9 @@ class MRP(Base):
     pull_request_ref = Column(String, nullable=False)
     branch_name = Column(String, nullable=False)
     commit_hash = Column(String)
+    # Phase 2 SoD (G7): immutable git tree hash the orchestrator actually
+    # verified. Compare against audit evidence execution_context.tree_hash.
+    verified_tree_hash = Column(String)
     created_by_agent_run = Column(String, ForeignKey("agent_runs.id"))
     prd_id = Column(String, ForeignKey("prds.id"))
     user_story_ids = Column(ARRAY(String), default=list)
@@ -183,12 +186,53 @@ class MRP(Base):
     dependency_scan_status = Column(String)
     ai_review_status = Column(String)
     ai_review_notes = Column(JSONB, default=list)
+    # Phase 2 I3 (G8): structured review findings written ONLY by the
+    # independent agent:reviewer via PATCH /mrps/{id}/review — never by the
+    # coder, the critic, or the orchestrator. Advisory-only: never approval.
+    ai_review_findings = Column(JSONB, default=list)
     human_review_focus = Column(Text)
     open_crp_ids = Column(ARRAY(String), default=list)
     status = Column(String, default="draft")
     human_reviewer = Column(String)
     reviewed_at = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class VerificationRequest(Base):
+    """
+    Step 2B — immutable remote-verification request record.
+
+    The Orchestrator POSTs a request carrying ONLY immutable references
+    (run_id, mrp_id, commit, worktree_ref) and NOTHING secret. A genuinely
+    separately-administered Verifier (remote GitLab runner / VM, never the
+    local Orchestrator's principal) atomically claims it, verifies the exact
+    pinned commit, writes trusted evidence to the MRP as ci:verifier, and
+    records completion here. The Orchestrator only ever reads non-secret
+    status via GET.
+
+    DEV/CONTAINMENT ONLY note: the local harness exercises this protocol
+    and its security rules, but does NOT establish the genuine remote
+    credential boundary (the local runner/admin is the same m.barani). See
+    tests/test_sod_remote_boundary.py and docs/ADR/ADR-002 for the boundary
+    carve-out.
+    """
+    __tablename__ = "verification_requests"
+    id = Column(String, primary_key=True)          # VR-<seq>
+    run_id = Column(String, nullable=False, unique=True)  # one logical request per run
+    mrp_id = Column(String, nullable=False, index=True)
+    commit = Column(String, nullable=False)        # EXACT pinned commit
+    worktree_ref = Column(String, nullable=False)  # repo/object-store reference
+    status = Column(String, nullable=False, default="pending")
+    # at most: pending | running | passed | failed | expired | error
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    started_at = Column(TIMESTAMP(timezone=True))
+    completed_at = Column(TIMESTAMP(timezone=True))
+    expires_at = Column(TIMESTAMP(timezone=True))  # TTL -> fail closed
+    lease_expires_at = Column(TIMESTAMP(timezone=True))  # atomic-pickup lease
+    lease_holder = Column(String)                  # ci:verifier that claimed it
+    verified_tree_hash = Column(String)            # authoritative hash, verifier-set
+    # failure information (verifier-set, non-secret)
+    failure_reason = Column(Text)
 
 
 class AuditLog(Base):

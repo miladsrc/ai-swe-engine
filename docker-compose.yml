@@ -29,6 +29,19 @@ services:
       # require_ci_actor). Replace with a real secret for anything beyond
       # localhost — see README "Environment variables".
       SASE_CI_TOKEN: "dev-ci-token-change-me"
+             # Independent Verifier credential (Phase 2 SoD Step 2). SEPARATE from
+      # SASE_CI_TOKEN: only the ci:verifier process may write TRUSTED
+      # verification evidence in strict mode, authenticated by this token.
+      # Replace with a real secret beyond localhost.
+      SASE_VERIFIER_TOKEN: "dev-verifier-token-change-me"
+      # Independent Reviewer credential (Phase 2 I3, G8). SEPARATE: only the
+      # agent:reviewer process may write the MRP's AI review fields via
+      # PATCH /mrps/{id}/review. Advisory only — never a merge approval.
+      SASE_REVIEWER_TOKEN: "dev-reviewer-token-change-me"
+      # Phase 2 SoD enforcement (docs/PHASES/PHASE-2.md): when strict, the
+      # merge gate G7 requires verifier-owned evidence bound to the MRP's
+      # verified_tree_hash. Flip to 'legacy' only during rollback.
+      SASE_SOD_MODE: "strict"
     ports:
       - "8000:8000"
     depends_on:
