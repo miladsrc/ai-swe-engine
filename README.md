@@ -274,8 +274,38 @@ curl localhost:8000/traceability/chain/MRP-PR-1
 | `SASE_ORPHAN_RUN_HOURS` | `24` | Runs still 'running' after this many hours are reaped to 'failed' at API startup (P4) |
 | `SASE_REQUIRE_HUMAN_TOKEN` | _(unset)_ | Phase 2: when set, human gates reject `X-Acting-As` and REQUIRE a bearer token from `POST /auth/login`. Unset = legacy header path still open |
 | `SASE_TOKEN_TTL_HOURS` | `72` | Lifetime of issued login tokens (`0` = no expiry) |
+| `SASE_SOD_MODE` | _(legacy)_ | `strict` = Separation-of-Duties: coder runs `propose_only`, MRP created WITHOUT tree hash, independent verifier subprocess owns evidence, gates G7/G8 enforced (docker-compose sets `strict`) |
+| `SASE_VERIFIER_TOKEN` | **_(required in strict)_** | Shared secret for the independent `ci:verifier` actor (claim-next, evidence, complete). Fail-closed 503 when unset — compose dev value `dev-verifier-token-change-me` |
+| `SASE_REVIEWER_TOKEN` | **_(required in strict)_** | Shared secret for the `agent:reviewer` actor (`PATCH /mrps/{id}/review`, gate G8). Fail-closed 503 when unset — compose dev value `dev-reviewer-token-change-me` |
+| `SASE_ENGINE_TRACE` | _(unset)_ | `1` = live `[comms]` request/response trace of every agent→engine call (method, path, actor, compact body; never headers/tokens) |
+| `SASE_DEMO_ATTEMPTS` | `3` | Number of fresh-spec attempts in `scripts/trace_coder_verifier.py` before it gives up on verifier PASS |
 | `TODO_STORE` | `todos.json` | Data file path for todo-cli (agent test override: `TODO_STORE=/tmp/test.json`) |
 | `CODER_MAX_REPAIRS` | `5` | Max reflection loop iterations before marking run as failed |
+
+## Real Coder ↔ Verifier communication trace
+
+The demo driver **`scripts/trace_coder_verifier.py`** proves the agent boundary
+end-to-end with **live** requests (nothing mocked):
+
+```powershell
+# stack up, then:
+$env:SASE_ENGINE_TRACE="1"
+$env:SASE_VERIFIER_TOKEN="dev-verifier-token-change-me"   # must match compose
+$env:SASE_SOD_MODE="strict"
+python scripts\trace_coder_verifier.py
+```
+
+It seeds a human-validated spec, runs the real `CoderAgent`
+(`qwen2.5-coder:7b`, `propose_only`), then walks the real handoff:
+MRP → immutable `POST /verification-requests` (pinned commit + worktree) →
+`ci:verifier` `claim-next` → evidence `PATCH` + audit → `complete` → G7 verdict
+(verifier-owned evidence tree-hash == `MRP.verified_tree_hash`) → real
+`POST /mrps/{id}/check-ready`. Known honest limitation: a `7b` codegen often
+fails its own tests, so the verifier-REJECTED path is the common outcome — which
+is itself the demonstration (the machinery fails closed and everything is
+auditable). `SASE_ENGINE_TRACE=1` also lights up `[comms]` lines in any script
+using `agents.engine_client`. Every real trace is re-creatable via
+`GET /mrps/{id}` + `GET /traceability/audit/MRP/{id}`.
 
 ## Human authentication (Phase 2)
 

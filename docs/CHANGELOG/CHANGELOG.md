@@ -2,6 +2,37 @@
 
 ---
 
+## 2026-09-05 (real Coder ↔ Verifier communication trace)
+
+### Added
+- `SASE_ENGINE_TRACE=1` opt-in `[comms]` tracing in `agents/engine_client.py`
+  (§ `request()`): every agent→engine call prints method, path, actor identity
+  and a compact body outline — never headers/tokens, bodies truncated.
+- `scripts/trace_coder_verifier.py`: end-to-end **live** demo of the agent
+  boundary (seed → CoderAgent propose_only → MRP → immutable verification
+  request → `ci:verifier` claim/evidence/complete → G7 verdict → real
+  `check-ready`), with bounded retry loop (`SASE_DEMO_ATTEMPTS`, default 3) and
+  honest rejected-run reporting.
+
+### Fixed (found during the live demo — all integration-level)
+- **`worktree_ref` missing from claim response** — the verifier runner crashed
+  with `KeyError: 'worktree_ref'`. `api/schemas.py::VerificationRequestStatus`
+  and `api/routers/verification_requests.py::_row_to_schema` now carry it.
+- **Mid-path wildcards unsupported** in `EngineClient._assert_allowed` — the
+  verifier's `POST /verification-requests/*/complete` (and reviewer/critic
+  `PATCH /mrps/*/review`) were rejected client-side. Mid-path `*` now matches
+  exactly one path segment; trailing `*` still means subtree.
+- **`_pseudo_pr_number` collisions** in `agents/coder_agent.py` (30k space;
+  two real (spec, run) pairs produced the same PR → HTTP 409). Now a SHA-1
+  stable hash over `spec_id|run_id`.
+
+### Tests
+- +4 `test_agents_unit.py` wildcard-match cases (verifier/reviewer/critic;
+  empty-extras and subtree-extensions must NOT match). Suite: 158 passed,
+  3 skipped non-live; demo validated live against running docker stack.
+
+---
+
 ## 2026-08-31 (Phase 2 architecture decision — REAL SoD isolation)
 
 ### Decision (owner)
