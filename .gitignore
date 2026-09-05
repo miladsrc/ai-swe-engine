@@ -4,3 +4,6 @@ git/
 __pycache__/
 *.pyc
 .venv/
+
+# swe-help local AI outputs (regenerable draft folders)
+swe-help-out/
