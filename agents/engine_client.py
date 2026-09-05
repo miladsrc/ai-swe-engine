@@ -9,6 +9,7 @@ future work) becomes a CRP/audit event rather than a silent bypass.
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -17,6 +18,25 @@ from agents.config import RolePolicy
 
 class PolicyViolation(PermissionError):
     """A role tried to use an endpoint outside its mandate."""
+
+
+# Opt-in communication trace (SASE_ENGINE_TRACE=1). Prints the real
+# request/response boundary between an agent (or the orchestrator) and the
+# engine — method, path, actor identity, and a compact body outline.
+# Never prints headers (tokens live there) and truncates body content.
+def _compact(value, limit: int = 80) -> str:
+    if isinstance(value, dict):
+        if "execution_context" in value:  # evidence bodies are huge
+            return f"{{... {len(value)} keys, context omitted}}"
+        out = ", ".join(f"{k}={_compact(v, 40)}" for k, v in list(value.items())[:6])
+        return "{" + out + "}"
+    if isinstance(value, list):
+        return f"[{len(value)} items]"
+    s = str(value)
+    return s[:limit] + ("…" if len(s) > limit else "")
+
+
+_ENGINE_TRACE = os.environ.get("SASE_ENGINE_TRACE") == "1"
 
 
 # ------------------------------------------------- human auth helpers ----
@@ -68,10 +88,12 @@ class EngineClient:
     # -- policy ---------------------------------------------------------
     def _assert_allowed(self, method: str, path: str) -> None:
         """
-        Exact-path match by default; a trailing '*' grants the subtree.
-        Wildcards must be explicit so 'POST /specs' can never silently
-        cover 'POST /specs/{id}/validate' (human-only). This is client-side
-        convenience only — the server enforces the real gates regardless.
+        Exact-path match by default; a trailing '*' grants the subtree; a
+        mid-path '*' matches exactly one path segment (e.g. the verifier's
+        'POST /verification-requests/*/complete'). Wildcards must be explicit
+        so 'POST /specs' can never silently cover 'POST /specs/{id}/validate'
+        (human-only). This is client-side convenience only — the server
+        enforces the real gates regardless.
         """
         if self.role is None:
             return  # unbound client (scripts/tests) — server still enforces
@@ -80,6 +102,13 @@ class EngineClient:
                 continue
             if pattern.endswith("*"):
                 if path.startswith(pattern[:-1]):
+                    return
+            elif "*" in pattern:
+                # mid-path wildcard: one path segment (never the empty string,
+                # never '/' — so '/*/complete' cannot match '/complete').
+                rx = re.compile(
+                    "^" + re.escape(pattern).replace(r"\*", r"[^/]+") + "$")
+                if rx.match(path):
                     return
             elif path == pattern:
                 return
@@ -111,12 +140,24 @@ class EngineClient:
         req = urllib.request.Request(
             f"{self.base_url}{path}", data=data,
             headers=self._headers(extra), method=method)
+        actor = self.role.identity if self.role else "unbound"
+        if _ENGINE_TRACE:
+            print(f"[comms] {actor} -> {method} {path}"
+                  + (f"  payload={_compact(payload)}" if payload is not None else ""),
+                  flush=True)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = resp.read().decode()
-                return json.loads(body) if body else {}
+                result = json.loads(body) if body else {}
+                if _ENGINE_TRACE:
+                    print(f"[comms] {actor} <- HTTP {resp.status} "
+                          f"{_compact(result)}", flush=True)
+                return result
         except urllib.error.HTTPError as e:
             detail = e.read().decode()[:500]
+            if _ENGINE_TRACE:
+                print(f"[comms] {actor} <- HTTP {e.code} {detail[:200]}",
+                      flush=True)
             raise RuntimeError(f"{method} {path} -> HTTP {e.code}: {detail}") from e
 
     # -- sugar ----------------------------------------------------------

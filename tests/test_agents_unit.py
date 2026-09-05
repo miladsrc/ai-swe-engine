@@ -63,6 +63,45 @@ def test_allowlist_matching_is_method_exact():
         client.request("DELETE", "/projects/x")
 
 
+def test_verifier_midpath_wildcard_complete():
+    # POST /verification-requests/*/complete -> exactly one path segment.
+    verifier = EngineClient(role=ROLES["verifier"])
+    assert verifier._assert_allowed(
+        "POST", "/verification-requests/VR-2026-00001/complete") is None
+    # exact claim endpoint remains allowed (exact match)
+    assert verifier._assert_allowed(
+        "POST", "/verification-requests/claim-next") is None
+    # no segment (missing id) must NOT match
+    with pytest.raises(PolicyViolation):
+        verifier._assert_allowed("POST", "/verification-requests//complete")
+    # extra segment (id + trailing) must NOT match
+    with pytest.raises(PolicyViolation):
+        verifier._assert_allowed(
+            "POST", "/verification-requests/VR-1/sub/complete")
+    # wrong method must NOT match even with a valid path
+    with pytest.raises(PolicyViolation):
+        verifier._assert_allowed("GET", "/verification-requests/VR-1/complete")
+
+
+def test_reviewer_midpath_wildcard_review_only():
+    reviewer = EngineClient(role=ROLES["reviewer"])
+    assert reviewer._assert_allowed(
+        "PATCH", "/mrps/MRP-PR-1/review") is None
+    # granting /mrps/*/review must NOT open the evidence path
+    with pytest.raises(PolicyViolation):
+        reviewer._assert_allowed(
+            "PATCH", "/mrps/MRP-PR-1/evidence")
+
+
+def test_critic_midpath_wildcard_review_only():
+    critic = EngineClient(role=ROLES["critic"])
+    assert critic._assert_allowed(
+        "PATCH", "/mrps/MRP-PR-2/review") is None
+    with pytest.raises(PolicyViolation):
+        critic._assert_allowed(
+            "PATCH", "/mrps/MRP-PR-2/evidence")
+
+
 # --- SpecAgent._enforce_ac_refs: LLM output never gets to break
 # --- traceability by fabricating AC ids -------------------------------
 

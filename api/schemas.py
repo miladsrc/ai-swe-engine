@@ -284,6 +284,7 @@ class VerificationRequestStatus(BaseModel):
     status: str            # pending | running | passed | failed | expired | error
     verified_tree_hash: Optional[str] = None
     failure_reason: Optional[str] = None
+    worktree_ref: Optional[str] = None   # needed by the claiming verifier runner
     created_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

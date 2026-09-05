@@ -15,6 +15,7 @@ Governance properties (mirrors the rest of the agent layer):
   resolves it with a VCR (§3.6.3).
 """
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -373,10 +374,10 @@ def run_tests(workspace: Path) -> tuple[bool, str]:
 
 def _pseudo_pr_number(spec_id: str, run_id: str = "") -> int:
     """No remote hosting exists (fully offline); MRs still need a stable
-    PR number. Derived from spec id + run sequence so retries against the
+    PR number. Derived from spec id + run id so retries against the
     persistent DB never collide."""
-    return 70000 + (sum(ord(c) for c in spec_id)
-                    + int(re.findall(r"(\d+)$", run_id)[0] if re.findall(r"(\d+)$", run_id) else 0)) % 30000
+    digest = hashlib.sha1(f"{spec_id}|{run_id}".encode()).digest()
+    return 70000 + int.from_bytes(digest[:4], "big") % 30000
 
 
 def record_ci_evidence(ci_engine: EngineClient, mrp_id: str,

@@ -42,7 +42,8 @@ def _row_to_schema(row) -> schemas.VerificationRequestStatus:
     return schemas.VerificationRequestStatus(
         id=row.id, run_id=row.run_id, mrp_id=row.mrp_id, commit=row.commit,
         status=row.status, verified_tree_hash=row.verified_tree_hash,
-        failure_reason=row.failure_reason, created_at=row.created_at,
+        failure_reason=row.failure_reason, worktree_ref=row.worktree_ref,
+        created_at=row.created_at,
         started_at=row.started_at, completed_at=row.completed_at,
         expires_at=row.expires_at)
 
