@@ -493,7 +493,13 @@ def _execute(run):
     _mark(run, "verifier", "running", actor="ci:verifier", model=None)
     state = {"project_id": project_id, "base_url": GOV_API, "prd_id": prd_id,
              "blueprint_id": bp_id, "blueprint_version": "v1.0",
-             "user_story_id": us_id}
+             "user_story_id": us_id,
+             # Phase 2 Step F (G8): run the INDEPENDENT reviewer subprocess
+             # INSIDE the shared orchestration helper (deterministic offline
+             # mode), then read the review result back from the API.
+             "run_reviewer": True, "review_offline": True}
+    _mark(run, "reviewer", "running", actor="agent:reviewer",
+          model=_role_models["reviewer"])
     result, crp_id, tree = _sod_verify_and_package(
         coder.engine, ws, spec_id, result, state)
     _mark(run, "tests", "completed", actor="ci:verifier", model=None,
@@ -508,33 +514,35 @@ def _execute(run):
            f"verified MRP {mrp_id} tree={tree[:12]}...")
     _log(run, f"verified MRP {mrp_id} tree={tree[:12]}... crp={crp_id}")
 
-    # ---------- reviewer (independent advisory subprocess, G8)
-    _mark(run, "reviewer", "running", actor="agent:reviewer",
-          model=_role_models["reviewer"])
-    env = dict(os.environ)
-    env["RUN_ID"] = run_id
-    repo_root = REPO_ROOT
-    proc = subprocess.run(
-        [sys.executable, "-m", "agents.reviewer", "--review",
-         "--mrp", mrp_id, "--api", GOV_API, "--offline"],
-        cwd=repo_root, env=env, capture_output=True, text=True,
-        timeout=int(os.environ.get("REVIEWER_TIMEOUT", "600")),
-    )
-    review = {"ai_review_status": "completed", "findings": []}
-    if proc.returncode == 0:
-        try:
-            out = json.loads(proc.stdout)
-            review = out if isinstance(out, dict) else review
-        except Exception:
-            review = {"ai_review_status": "completed",
-                      "raw": proc.stdout[:300]}
-    _mark(run, "reviewer", "completed", actor="agent:reviewer",
-          model=_role_models["reviewer"],
-          summary=f"Advisory review {review.get('ai_review_status')} "
-                  f"({len(review.get('findings', []))} findings) — advisory only",
-          artifacts=["review:advisory"])
-    _trace(run, "reviewer", "agent:reviewer", _role_models["reviewer"],
-           f"advisory review -> {review.get('ai_review_status')}")
+    # ---------- reviewer (independent advisory subprocess, G8) ----------
+    # Step F ran INSIDE _sod_verify_and_package: the reviewer subprocess
+    # wrote its advisory review with its own credential as agent:reviewer.
+    # We READ the actual result back from the API and mark the stage from
+    # what really happened — fail-closed, never a fabricated completion.
+    _code, review = _http("GET", f"/mrps/{mrp_id}/review", {},
+                          headers=_human_headers(), ok=(200,))
+    review_status = review.get("ai_review_status")
+    if review_status in ("completed", "needs_revision"):
+        _mark(run, "reviewer", "completed", actor="agent:reviewer",
+              model=_role_models["reviewer"],
+              summary=f"Advisory review {review_status} "
+                      f"({len(review.get('ai_review_findings', []))} findings) "
+                      f"— advisory only",
+              artifacts=["review:advisory"])
+        _trace(run, "reviewer", "agent:reviewer", _role_models["reviewer"],
+               f"advisory review -> {review_status}" +
+               (" (findings to weigh before merge)"
+                if review_status == "needs_revision" else ""))
+    else:
+        _mark(run, "reviewer", "failed", actor="agent:reviewer",
+              model=_role_models["reviewer"],
+              summary="No reviewer-owned review was recorded for this MRP — "
+                      "G8 cannot be satisfied; the run is FAILED, not completed.",
+              artifacts=[mrp_id], errors=["ai_review_status missing"])
+        raise RuntimeError(
+            f"reviewer step produced no reviewer-owned review for {mrp_id} "
+            f"(ai_review_status={review_status!r}); fail-closed — the G8 "
+            f"merge gate cannot be satisfied and nothing was fabricated.")
 
     return run_id, mrp_id, tree, ws
 

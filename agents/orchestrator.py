@@ -174,7 +174,8 @@ def _run_code_phase_strict(coder, base_url: str, spec_id: str,
     """
     Phase 2 SoD strict flow (docs/PHASES/PHASE-2.md steps A-H):
     proposal -> snapshot -> independent verification (verifier subprocess,
-    Step 2) -> MRP -> terminal patch -> CRP.
+    Step 2) -> independent review (reviewer subprocess, Step F/G8) -> MRP ->
+    terminal patch -> CRP.
     """
     from agents.coder_agent import (CoderResult, extract_open_questions)
 
@@ -187,6 +188,12 @@ def _run_code_phase_strict(coder, base_url: str, spec_id: str,
     pkg_state = dict(state)
     pkg_state.setdefault("project_id", coder.project_id)
     pkg_state["base_url"] = base_url
+    # Phase 2 Step F (G8): the strict flow always arranges the independent
+    # Reviewer subprocess after verification. Offline pipelines (use_ollama is
+    # False, the deterministic template mode) review offline; online/auto
+    # pipelines let the reviewer pick its own available backend.
+    pkg_state["run_reviewer"] = True
+    pkg_state["review_offline"] = (use_ollama is False)
     result, crp_id, tree = _sod_verify_and_package(
         coder.engine, WORKSPACE, spec_id, result, pkg_state)
     _print_human_gate_instructions(base_url, crp_id, result.mrp_id)
@@ -269,6 +276,60 @@ def _spawn_verifier_runner(api_base: str) -> None:
     )
 
 
+def _run_reviewer_subprocess(mrp_id: str, run_id: str, base_url: str,
+                             offline: bool) -> dict:
+    """
+    Step F (Phase 2 I3, gate G8): run the INDEPENDENT Reviewer as a SEPARATE
+    OS subprocess (python -m agents.reviewer --review) and parse its
+    machine-readable stdout result.
+
+    The Orchestrator passes ONLY immutable references (mrp_id, run_id, base
+    URL) on the command line and does NOT pass or reference the reviewer
+    credential: the subprocess inherits the parent environment and reads it
+    from there, so the Orchestrator never holds it and could never
+    self-certify a review. The Orchestrator NEVER writes the review fields
+    itself (it has no /review route nor the reviewer role).
+
+    The Reviewer is ADVISORY ONLY (G8 SoD requirement 3). A "completed" or
+    "needs_revision" outcome is BOTH a legitimate advisory verdict to surface
+    to the human — neither is raised here. Only an operational/protocol
+    failure (non-zero exit, unparseable output, or a distinct 'ok:false') is
+    treated as fail-closed, consistent with the Verifier subprocess path.
+
+    Offline mode: --offline makes the reviewer use the deterministic
+    TemplateLLM REVIEW backend (no model invocation), so the local pipeline
+    stays runnable without Ollama while the reviewer still writes the real
+    review PATCH with its own credential.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    cmd = [sys.executable, "-m", "agents.reviewer", "--review",
+           "--mrp", mrp_id, "--api", base_url]
+    if offline:
+        cmd.append("--offline")
+    # The subprocess INHERITS the parent environment — including the
+    # reviewer credential, which it reads itself. Only RUN_ID is supplied for
+    # review provenance. The orchestrator code below never references the
+    # reviewer credential variable by name.
+    env = dict(os.environ)
+    env["RUN_ID"] = run_id
+    proc = subprocess.run(
+        cmd, cwd=repo_root, env=env, capture_output=True, text=True,
+        timeout=int(os.environ.get("REVIEWER_TIMEOUT", "600")),
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"reviewer subprocess failed (exit {proc.returncode}): "
+            f"{(proc.stdout or '').strip()[-1500:] or (proc.stderr or '').strip()[-1500:]}")
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"reviewer returned non-JSON output: "
+                           f"{proc.stdout[:2000]}")
+    if not result.get("ok", False):
+        raise RuntimeError(f"reviewer reported failure: {result}")
+    return result
+
+
 def _poll_verification_request(coder_engine, request_id: str,
                                max_wait: int = 920, poll_ms: int = 500) -> dict:
     """
@@ -304,11 +365,15 @@ def _sod_verify_and_package(coder_engine, workspace: Path, spec_id: str,
         runner shim; genuinely a separately-administered remote runner),
       - polls ONLY non-secret status until terminal,
       - reads the AUTHORITATIVE verified_tree_hash back from the request,
+      - Step F (G8): arranges the INDEPENDENT Reviewer as a separate
+        subprocess whose advisory review it does NOT write itself,
       - raises the CRP and applies the single terminal patch.
 
     The Verifier (agents/verifier.py --claim) computes the tree hash from the
     actual pinned checkout and writes trusted evidence with its own
-    credential. The Orchestrator submits, waits, and reads — nothing more.
+    credential. The Reviewer (agents/reviewer.py --review) writes ONLY its
+    advisory review fields with its OWN credential. The Orchestrator
+    submits, waits, reads, and coordinates — nothing more.
 
     Returns (result, crp_id, tree_hash). tree_hash is the authoritative value
     reported back by the verification request.
@@ -376,6 +441,24 @@ def _sod_verify_and_package(coder_engine, workspace: Path, spec_id: str,
     # for a 'passed' status. Expose them as True for reporting.
     tests_passed = scan_passed = lint_passed = True
     print(f"[verify] verifier PASS tree={tree[:12]}…")
+
+    # Step F (Phase 2 I3, G8): the INDEPENDENT Reviewer. Coordinated here but
+    # executed as a SEPARATE subprocess under ITS OWN credential; the
+    # Orchestrator never writes review fields and never touches the reviewer
+    # credential. Opt-in via state["run_reviewer"] so the legacy demo scripts
+    # that document G8 as an explicit later step keep their exact behavior.
+    if state.get("run_reviewer"):
+        review = _run_reviewer_subprocess(
+            result.mrp_id, result.run_id, state["base_url"],
+            offline=bool(state.get("review_offline")))
+        review_status = review.get("ai_review_status", "unknown")
+        n_findings = len(review.get("findings") or [])
+        print(f"[review] independent review recorded on {result.mrp_id}: "
+              f"status={review_status} findings={n_findings} (advisory-only)")
+        if review_status == "needs_revision":
+            print("[review] ADVISORY: the independent reviewer found issues. "
+                  "A human must weigh them before any merge (G8 is "
+                  "advisory-only).")
 
     # CRP BEFORE the single terminal patch (terminal runs are immutable).
     crp_id = None

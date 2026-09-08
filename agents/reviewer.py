@@ -42,8 +42,6 @@ from pathlib import Path
 from agents.config import ROLES
 from agents.engine_client import EngineClient
 from agents.llm import LLMBackend, OllamaLLM, TemplateLLM
-from api.routers import mrp
-from tests.test_traceability_chain import client
 
 # Credential consumed ONLY here. The Orchestrator never references this
 # name (asserted by the G8 security tests).
@@ -57,6 +55,21 @@ REVIEW_SYSTEM = (
     "produce STRUCTURED findings. You never approve a merge, never write "
     "verification evidence, and never modify code. Be specific and concise."
 )
+
+# Deterministic offline REVIEW template (TemplateLLM). The first line of the
+# user message is the template key ("REVIEW"); the body is the backend's
+# entire response. It intentionally contains NO parseable
+# SEVERITY|file:line|message findings, so the advisory review records as
+# "completed" with zero findings and the human remains the final authority.
+# This is what makes `python -m agents.reviewer --offline` (and the
+# orchestrator's Step F offline review) deterministic without Ollama.
+REVIEW_TEMPLATES = {
+    "REVIEW": (
+        "# deterministic offline advisory review (TemplateLLM stand-in for "
+        "the G8 independent review; no model invocation on this host). "
+        "No findings recorded. The human is the final authority on this MRP."
+    ),
+}
 
 # Parsed from the model output; one per line:
 #   SEVERITY|path:line|message
@@ -106,16 +119,20 @@ def _review_and_write(token: str, client: EngineClient, mrp_id: str,
 
     evidence_view = client.get(f"/evidence/run/{run_id}") if run_id else {}
 
-    user = json.dumps({
+    # The run row may not carry mrp_id yet when the reviewer runs (Step F is
+    # coordinated BEFORE the terminal patch, which is what binds run->MRP).
+    # mrp_evidence can therefore legitimately be None — treat as empty.
+    mrp_evidence = evidence_view.get("mrp_evidence") or {}
+    # First line = TemplateLLM template key (offline backend); for the LLM
+    # backend it is a benign task marker. The reviewer's own reads only.
+    user = "REVIEW\n" + json.dumps({
         "mrp_id": mrp_id,
         "spec": (spec or {}).get("body_ref", ""),
         "generated_files": (run or {}).get("generated_files", []),
         "commit_hash": (run or {}).get("commit_hash"),
         "evidence": {
-            "unit_tests_status": evidence_view.get("mrp_evidence", {}).get(
-                "unit_tests_status"),
-            "security_scan_status": evidence_view.get("mrp_evidence", {}).get(
-                "security_scan_status"),
+            "unit_tests_status": mrp_evidence.get("unit_tests_status"),
+            "security_scan_status": mrp_evidence.get("security_scan_status"),
         },
         "instructions": ("List findings one per line as: "
                          "SEVERITY|path:line|message"),
@@ -180,11 +197,11 @@ def _run(envelope: dict) -> None:
 
 def _backend(model: str, offline: bool) -> LLMBackend:
     if offline:
-        return TemplateLLM()
+        return TemplateLLM(REVIEW_TEMPLATES)
     ollama = OllamaLLM(model=model)
     if ollama.available():
         return ollama
-    return TemplateLLM()
+    return TemplateLLM(REVIEW_TEMPLATES)
 
 
 def main() -> None:
